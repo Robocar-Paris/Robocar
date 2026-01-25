@@ -27,7 +27,7 @@ duty = 0
 try:
     print("Contrôle en cours. Appuie sur 'BACK' pour quitter.")
 
-    while True:
+     while True:
         # Lecture des axes
         axis_throttle = gamepad.axis(5)  # Gâchette droite (accélérer)
         axis_brake = gamepad.axis(2)     # Gâchette gauche (freiner)
