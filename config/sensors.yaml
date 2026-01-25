@@ -1,0 +1,101 @@
+# Sensor Configuration
+# Hardware-specific settings for all sensors
+
+# LiDAR LD19 Configuration
+lidar:
+  driver: "ld19"
+  port: "/dev/ttyUSB0"
+  baudrate: 230400
+
+  # Scan parameters
+  scan_frequency: 10       # Hz (target)
+  points_per_scan: 360     # Approximate
+  min_range: 0.02          # meters
+  max_range: 12.0          # meters
+
+  # Filtering
+  filter:
+    min_intensity: 10      # Minimum signal intensity
+    remove_outliers: true
+    median_filter_size: 3
+
+  # Angle configuration (radians)
+  angle_offset: 0.0        # Rotation offset to align with robot frame
+  angle_min: 0.0           # Start angle (0 = forward)
+  angle_max: 6.283185      # End angle (2*pi = full rotation)
+
+  # Scan zones for obstacle detection
+  zones:
+    front:
+      angle_min: -0.785    # -45 degrees
+      angle_max: 0.785     # +45 degrees
+    left:
+      angle_min: 0.785
+      angle_max: 2.356     # +135 degrees
+    rear:
+      angle_min: 2.356
+      angle_max: 3.927     # +225 degrees
+    right:
+      angle_min: -2.356
+      angle_max: -0.785
+
+# GPS RTK Point One Configuration
+gps:
+  driver: "pointone"
+  port: "/dev/ttyUSB1"
+  baudrate: 115200
+
+  # RTK settings
+  rtk:
+    ntrip_server: ""       # NTRIP caster address (if using)
+    ntrip_port: 2101
+    ntrip_mountpoint: ""
+    ntrip_username: ""
+    ntrip_password: ""
+
+  # Quality thresholds
+  quality:
+    min_satellites: 6
+    max_hdop: 2.0
+    require_rtk_fixed: false  # If true, only accept RTK fixed positions
+
+  # Position filtering
+  filter:
+    enabled: true
+    type: "kalman"         # kalman, moving_average, none
+    process_noise: 0.1
+    measurement_noise: 0.5
+
+  # Coordinate reference
+  datum:
+    # WGS84 by default, can specify local origin
+    local_origin:
+      enabled: false
+      latitude: 0.0
+      longitude: 0.0
+      altitude: 0.0
+
+# Camera OAK-D Configuration
+camera:
+  driver: "depthai"
+  resolution: [640, 480]
+  fps: 30
+
+  # Depth settings
+  depth:
+    enabled: true
+    min_range: 0.2         # meters
+    max_range: 10.0        # meters
+
+  # Exposure
+  exposure:
+    auto: true
+    value: 20000           # microseconds (if auto=false)
+
+# IMU Configuration (if available)
+imu:
+  enabled: false
+  driver: "bno055"
+  port: "/dev/ttyUSB2"
+  baudrate: 115200
+  frame_id: "imu_link"

@@ -1,2 +1,35 @@
+# Robocar Dependencies
+# Install with: pip install -r requirements.txt
+
+# ===== Machine Learning =====
 torch
-torchVision
+torchvision
+
+# ===== Computer Vision =====
+opencv-python
+depthai                    # OAK-D camera SDK
+
+# ===== Hardware Interfaces =====
+pyserial                   # Serial communication
+pyvesc                     # VESC motor controller
+
+# ===== Data Processing =====
+numpy
+pandas
+
+# ===== Visualization =====
+matplotlib
+
+# ===== Configuration =====
+pyyaml                     # YAML config files
+
+# ===== Simulation (optional) =====
+# mlagents                 # ML-Agents (install separately if needed)
+
+# ===== Navigation (for later phases) =====
+scipy                      # Scientific computing (for EKF, optimization)
+# scikit-image            # Image processing (optional)
+
+# ===== Development =====
+# pytest                   # Testing (optional)
+# black                    # Code formatting (optional)

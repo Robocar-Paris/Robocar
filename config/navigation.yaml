@@ -1,0 +1,166 @@
+# Navigation Configuration
+# Parameters for SLAM, path planning, and control
+
+# SLAM Configuration
+slam:
+  # Map parameters
+  map:
+    resolution: 0.05       # meters per cell
+    width: 100.0           # meters
+    height: 100.0          # meters
+    origin_x: -50.0        # meters (map origin in world frame)
+    origin_y: -50.0
+
+  # Occupancy grid
+  occupancy:
+    free_threshold: 0.2
+    occupied_threshold: 0.8
+    unknown_value: 0.5
+
+  # Scan matching (ICP)
+  icp:
+    max_iterations: 50
+    convergence_threshold: 0.001
+    max_correspondence_distance: 0.5
+
+  # Loop closure (optional)
+  loop_closure:
+    enabled: false
+    min_score: 0.7
+    search_radius: 10.0    # meters
+
+# Localization (EKF)
+localization:
+  # State: [x, y, theta, vx, vy, omega]
+  initial_covariance:
+    position: 1.0
+    orientation: 0.5
+    velocity: 0.1
+
+  # Process noise
+  process_noise:
+    position: 0.01
+    orientation: 0.01
+    velocity: 0.1
+
+  # Measurement noise
+  measurement_noise:
+    gps_position: 0.02     # RTK fixed accuracy
+    lidar_scan: 0.05
+    odometry: 0.1
+
+  # Sensor fusion weights
+  fusion:
+    gps_weight: 0.8        # When RTK fixed
+    lidar_weight: 0.6
+    odometry_weight: 0.3
+
+# Global Path Planning
+global_planner:
+  algorithm: "astar"       # astar, dijkstra, rrt
+
+  # A* parameters
+  astar:
+    heuristic: "euclidean" # euclidean, manhattan, diagonal
+    weight: 1.2            # Heuristic weight (>1 for faster but suboptimal)
+    diagonal_movement: true
+
+  # Path smoothing
+  smoothing:
+    enabled: true
+    weight_data: 0.1
+    weight_smooth: 0.3
+
+  # Inflation
+  inflation:
+    robot_radius: 0.15     # meters
+    safety_margin: 0.1     # additional margin
+
+# Local Path Planning
+local_planner:
+  algorithm: "dwa"         # dwa, teb, pure_pursuit
+
+  # Dynamic Window Approach
+  dwa:
+    # Velocity limits
+    max_vel_x: 1.0         # m/s
+    min_vel_x: 0.0         # m/s (no reverse)
+    max_vel_theta: 1.0     # rad/s
+
+    # Acceleration limits
+    acc_lim_x: 0.5         # m/s²
+    acc_lim_theta: 1.0     # rad/s²
+
+    # Simulation
+    sim_time: 2.0          # seconds
+    sim_granularity: 0.1   # seconds
+    vx_samples: 10
+    vtheta_samples: 20
+
+    # Cost weights
+    path_distance_bias: 0.6
+    goal_distance_bias: 0.8
+    occdist_scale: 0.1
+
+    # Goal tolerance
+    xy_goal_tolerance: 0.2 # meters
+    yaw_goal_tolerance: 0.1 # radians
+
+  # Pure Pursuit
+  pure_pursuit:
+    lookahead_distance: 0.5  # meters
+    min_lookahead: 0.3
+    max_lookahead: 1.5
+    lookahead_ratio: 2.0     # lookahead = ratio * velocity
+
+# Path Following Controller
+controller:
+  type: "pure_pursuit"     # pure_pursuit, stanley, pid
+
+  # Pure Pursuit
+  pure_pursuit:
+    lookahead_distance: 0.5
+    max_steering_angle: 0.3
+
+  # PID for velocity control
+  velocity_pid:
+    kp: 1.0
+    ki: 0.1
+    kd: 0.05
+
+  # Steering rate limit
+  max_steering_rate: 0.5   # rad/s
+
+# Waypoint Navigation
+waypoints:
+  # Behavior at waypoints
+  stop_at_waypoint: false
+  waypoint_reached_threshold: 0.5  # meters
+
+  # Path following
+  path_tracking_tolerance: 0.3     # meters (cross-track error)
+
+# Recovery behaviors
+recovery:
+  enabled: true
+
+  # Stuck detection
+  stuck_detection:
+    velocity_threshold: 0.05  # m/s
+    time_threshold: 3.0       # seconds
+
+  # Recovery actions
+  actions:
+    - "rotate_recovery"
+    - "backup_recovery"
+    - "clear_costmap"
+
+  # Rotate recovery
+  rotate:
+    angle: 1.57            # radians (90 degrees)
+    velocity: 0.5          # rad/s
+
+  # Backup recovery
+  backup:
+    distance: 0.3          # meters
+    velocity: 0.2          # m/s
