@@ -1,0 +1,56 @@
+# =============================================================================
+# Robocar - Jetson Nano Specific Dependencies
+# =============================================================================
+# Ce fichier liste les dépendances pour Jetson Nano.
+#
+# IMPORTANT:
+# - NE PAS installer torch/torchvision via pip sur Jetson
+# - Utiliser les wheels NVIDIA officielles
+# - Certains paquets sont mieux installés via apt
+#
+# Installation:
+#   1. sudo apt install python3-numpy python3-opencv python3-yaml
+#   2. pip3 install --user -r requirements-jetson.txt
+#   3. Installer PyTorch manuellement (voir instructions ci-dessous)
+# =============================================================================
+
+# Core dependencies (versions compatibles avec Python 3.6 de Jetson)
+pyyaml>=5.3.0,<6.0
+
+# Serial communication (LiDAR LD19, GPS Point One, VESC)
+pyserial>=3.4,<4.0
+pyvesc>=0.0.1
+
+# SLAM - BreezySLAM est optimisé pour ARM/Jetson
+breezyslam>=1.0
+
+# Data analysis (optionnel)
+pandas>=1.1.0,<2.0
+
+# Visualization (optionnel)
+matplotlib>=3.3.0,<4.0
+
+# =============================================================================
+# PyTorch Installation pour Jetson Nano
+# =============================================================================
+#
+# JetPack 4.6 (L4T R32.6.1) - Ubuntu 18.04 - Python 3.6:
+#   wget https://nvidia.box.com/shared/static/fjtbno0vpo676a25cgvuqc1wty0fkkg6.whl -O torch-1.10.0-cp36-cp36m-linux_aarch64.whl
+#   pip3 install torch-1.10.0-cp36-cp36m-linux_aarch64.whl
+#
+# Pour torchvision:
+#   sudo apt install -y libjpeg-dev zlib1g-dev libpython3-dev
+#   git clone --branch v0.11.1 https://github.com/pytorch/vision torchvision
+#   cd torchvision && python3 setup.py install --user
+#
+# Plus d'infos: https://forums.developer.nvidia.com/t/pytorch-for-jetson/72048
+# =============================================================================
+
+# =============================================================================
+# Paquets à installer via apt (pas pip) sur Jetson
+# =============================================================================
+#
+# sudo apt install -y python3-numpy python3-opencv python3-yaml python3-serial
+#
+# Ces versions système sont optimisées pour ARM et peuvent utiliser CUDA.
+# =============================================================================

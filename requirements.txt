@@ -1,2 +1,37 @@
-torch
-torchVision
+# =============================================================================
+# Robocar - Python Dependencies
+# =============================================================================
+# Installation: pip3 install -r requirements.txt
+#
+# ATTENTION pour Jetson Nano:
+# - PyTorch doit être installé depuis les wheels NVIDIA (voir requirements-jetson.txt)
+# - Utilise "pip3 install --user" pour éviter les conflits système
+# =============================================================================
+
+# Core dependencies
+numpy>=1.19.0
+pyyaml>=5.3.0
+
+# Serial communication (LiDAR, GPS, VESC)
+pyserial>=3.4
+pyvesc>=0.0.1
+
+# SLAM (optimized for ARM)
+breezyslam>=1.0
+
+# Machine Learning (PyTorch)
+# Note: Sur Jetson Nano, installer depuis NVIDIA wheels, pas pip
+torch>=1.10.0
+torchvision>=0.11.0
+
+# Vision (optionnel - pour camera module)
+# opencv-python>=4.5.0  # Sur Jetson, utiliser python3-opencv système
+
+# Data analysis (optionnel - pour training)
+pandas>=1.1.0
+
+# DepthAI camera (optionnel - pour OAK camera)
+# depthai>=2.17.0
+
+# Visualization (optionnel)
+matplotlib>=3.3.0
