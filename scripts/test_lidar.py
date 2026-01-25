@@ -15,8 +15,11 @@ import time
 import math
 import argparse
 
-# Add src to path
-sys.path.insert(0, '/home/user/Robocar/src')
+# Add src to path (works from any directory)
+import os
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
 from drivers.lidar_ld19 import LD19Driver, scan_to_cartesian
 

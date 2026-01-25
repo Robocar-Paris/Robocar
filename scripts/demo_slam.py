@@ -21,8 +21,11 @@ import math
 import argparse
 import numpy as np
 
-# Add src to path
-sys.path.insert(0, '/home/user/Robocar/src')
+# Add src to path (works from any directory)
+import os
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
 from slam.slam_core import SLAM, SLAMConfig
 from slam.occupancy_grid import OccupancyGrid

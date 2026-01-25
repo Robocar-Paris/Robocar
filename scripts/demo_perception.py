@@ -18,8 +18,11 @@ import time
 import math
 import numpy as np
 
-# Add src to path
-sys.path.insert(0, '/home/borischeng/Robocar/Robocar_IA/src')
+# Add src to path (works from any directory)
+import os
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
 from perception.lidar_processor import LidarProcessor, create_simulated_scan
 from perception.obstacle_detector import ObstacleDetector, ObstacleType
