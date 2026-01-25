@@ -491,7 +491,7 @@ if __name__ == '__main__':
     port = sys.argv[1] if len(sys.argv) > 1 else '/dev/ttyUSB1'
     print(f"[GPS] Testing GPS on {port}...")
 
-    gps = PointOneGPS(port)
+    gps = GPSDriver(port)
     if gps.start():
         print("[GPS] Started successfully")
         print("[GPS] Waiting for RTK fixed (max 30s)...")

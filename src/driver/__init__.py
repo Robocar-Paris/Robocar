@@ -7,6 +7,6 @@ Drivers for robocar exploration components
 
 from .lidar import LidarDriver
 from .gps import GPSDriver
-from .vesc import VESCController
+from .vesc_motor import VESCController
 
 __all__ = ['LidarDriver', 'GPSDriver', 'VESCController']
