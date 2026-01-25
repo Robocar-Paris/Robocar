@@ -1,0 +1,65 @@
+# Robocar Robot Configuration
+# Physical parameters and hardware settings
+
+robot:
+  name: "Robocar"
+  type: "ackermann"  # Ackermann steering (car-like)
+
+  # Physical dimensions (meters)
+  dimensions:
+    wheelbase: 0.26        # Distance between front and rear axles
+    track_width: 0.18      # Distance between left and right wheels
+    wheel_radius: 0.035    # Wheel radius
+    wheel_circumference: 0.22  # 2 * pi * radius
+
+  # Kinematic constraints
+  constraints:
+    max_velocity: 2.0          # m/s
+    max_acceleration: 1.0      # m/s²
+    max_steering_angle: 0.3    # radians (~17 degrees)
+    min_turning_radius: 0.5    # meters
+
+  # Motor configuration
+  motor:
+    poles: 14
+    gear_ratio: 1.0
+    max_duty_cycle: 0.2        # Safety limit (20%)
+
+# Sensor mounting positions (relative to robot center)
+# Coordinate frame: X=forward, Y=left, Z=up
+sensors:
+  lidar:
+    position:
+      x: 0.1    # 10cm in front of center
+      y: 0.0
+      z: 0.15   # 15cm above ground
+    orientation:
+      roll: 0.0
+      pitch: 0.0
+      yaw: 0.0
+
+  gps:
+    position:
+      x: 0.0
+      y: 0.0
+      z: 0.25   # GPS antenna height
+    antenna_offset: 0.0  # Horizontal offset from IMU
+
+  camera:
+    position:
+      x: 0.12
+      y: 0.0
+      z: 0.20
+    orientation:
+      roll: 0.0
+      pitch: -0.1  # Slight downward tilt
+      yaw: 0.0
+
+# Safety parameters
+safety:
+  emergency_stop_distance: 0.3   # meters
+  warning_distance: 1.0          # meters
+  watchdog_timeout: 0.5          # seconds
+  max_no_lidar_time: 1.0         # seconds before stopping
+  max_no_gps_time: 5.0           # seconds before switching to local nav
+  
