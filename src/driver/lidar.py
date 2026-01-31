@@ -139,7 +139,7 @@ class LidarDriver:
 
                     while len(buffer) >= self.PACKET_SIZE:
                         # Find header
-                        header_idx = buffer.find(bytes([self.HEADER]))
+                        header_idx = buffer.find(bytes([self.HEADER_BYTES]))
                         if header_idx == -1:
                             buffer.clear()
                             break

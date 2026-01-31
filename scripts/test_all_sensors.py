@@ -16,11 +16,11 @@ import threading
 import argparse
 
 # Add src to path
-sys.path.insert(0, '/home/user/Robocar/src')
+sys.path.insert(0, '/home/borischeng/Robocar/Robocar_IA/src')
 
-from drivers.lidar_ld19 import LD19Driver
-from drivers.gps_pointone import PointOneGPS, gps_to_local
-from drivers.vesc_motor import VESCController
+from driver.lidar import LidarDriver
+from driver.gps import GPSDriver, gps_to_local
+from driver.vesc_motor import VESCController
 
 try:
     import matplotlib.pyplot as plt
@@ -66,7 +66,7 @@ class SensorTester:
 
         # Start LiDAR
         print(f"[LIDAR] Starting on {self.lidar_port}...")
-        self.lidar = LD19Driver(self.lidar_port)
+        self.lidar = LidarDriver(self.lidar_port)
         if self.lidar.start():
             print("[LIDAR] OK")
             status['lidar'] = True
@@ -75,7 +75,7 @@ class SensorTester:
 
         # Start GPS
         print(f"[GPS] Starting on {self.gps_port}...")
-        self.gps = PointOneGPS(self.gps_port)
+        self.gps = GPSDriver(self.gps_port)
         if self.gps.start():
             print("[GPS] OK")
             status['gps'] = True
