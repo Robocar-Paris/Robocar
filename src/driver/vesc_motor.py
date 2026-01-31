@@ -65,7 +65,7 @@ class VESCController:
     """
 
     # Safety limits
-    MAX_DUTY_CYCLE = 0.2     # Maximum duty cycle (20%)
+    MAX_DUTY_CYCLE = 0.2     # Maximum duty cycle
     MAX_STEERING = 0.3       # Maximum steering angle (radians)
     RAMP_STEP = 0.02         # Duty cycle change per ramp step
     RAMP_INTERVAL = 0.02     # Seconds between ramp steps

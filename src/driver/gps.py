@@ -1,13 +1,8 @@
 """
 GPS RTK Driver for Point One Navigation
 
-Point One provides centimeter-accurate RTK positioning.
-This driver handles NMEA parsing and RTK status monitoring.
-
-NMEA Sentences:
-- GGA: Global Positioning System Fix Data (position + quality)
-- RMC: Recommended Minimum Specific GPS Data (position + velocity)
-- GST: GPS Pseudorange Noise Statistics (accuracy)
+Simple driver to retrieve GPS coordinates from Point One RTK GPS.
+Parses NMEA GGA (position) and GST (accuracy) sentences.
 
 RTK Quality Levels:
 - 0: No fix
@@ -15,32 +10,24 @@ RTK Quality Levels:
 - 2: DGPS - ~0.5-2m accuracy
 - 4: RTK Fixed - ~1-2cm accuracy
 - 5: RTK Float - ~10-50cm accuracy
-
-References:
-- https://pointonenav.com/docs
-- NMEA 0183 Standard
 """
 
 import serial
 import threading
 import time
-import math
-from typing import Optional, Tuple, Callable
-from dataclasses import dataclass, field
-from datetime import datetime
-from collections import deque
+from typing import Optional, Callable
+from dataclasses import dataclass
 
 
 @dataclass
 class GPSPosition:
-    """GPS position data."""
+    """GPS position data from Point One RTK."""
     timestamp: float         # Unix timestamp
     latitude: float          # Degrees (positive = North)
     longitude: float         # Degrees (positive = East)
     altitude: float          # Meters above sea level
-    quality: int             # Fix quality (0-5)
+    quality: int             # Fix quality (0, 1, 2, 4, 5)
     satellites: int          # Number of satellites
-    hdop: float              # Horizontal dilution of precision
     accuracy_h: float        # Horizontal accuracy in meters
     accuracy_v: float        # Vertical accuracy in meters
 
@@ -61,102 +48,50 @@ class GPSPosition:
         """Check if position has RTK fixed quality."""
         return self.quality == 4
 
-    def distance_to(self, other: 'GPSPosition') -> float:
-        """
-        Calculate distance to another position using Haversine formula.
-
-        Returns:
-            Distance in meters
-        """
-        R = 6371000  # Earth radius in meters
-
-        lat1 = math.radians(self.latitude)
-        lat2 = math.radians(other.latitude)
-        dlat = math.radians(other.latitude - self.latitude)
-        dlon = math.radians(other.longitude - self.longitude)
-
-        a = (math.sin(dlat/2)**2 +
-             math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2)
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-
-        return R * c
-
-    def bearing_to(self, other: 'GPSPosition') -> float:
-        """
-        Calculate bearing to another position.
-
-        Returns:
-            Bearing in radians (0 = North, pi/2 = East)
-        """
-        lat1 = math.radians(self.latitude)
-        lat2 = math.radians(other.latitude)
-        dlon = math.radians(other.longitude - self.longitude)
-
-        x = math.sin(dlon) * math.cos(lat2)
-        y = (math.cos(lat1) * math.sin(lat2) -
-             math.sin(lat1) * math.cos(lat2) * math.cos(dlon))
-
-        return math.atan2(x, y)
-
-
-@dataclass
-class GPSVelocity:
-    """GPS velocity data."""
-    timestamp: float      # Unix timestamp
-    speed: float          # Speed in m/s
-    heading: float        # Heading in radians (0 = North)
-    valid: bool           # Whether velocity is valid
+    @property
+    def is_valid(self) -> bool:
+        """Check if position is valid (has fix)."""
+        return self.quality > 0
 
 
 class GPSDriver:
     """
-    Driver for Point One RTK GPS.
+    Simple driver for Point One RTK GPS.
 
     Usage:
-        gps = PointOneGPS('/dev/ttyUSB1')
+        gps = GPSDriver('/dev/ttyUSB1')
         gps.start()
 
-        while True:
-            pos = gps.get_position()
-            if pos:
-                print(f"Position: {pos.latitude:.6f}, {pos.longitude:.6f}")
-                print(f"Quality: {pos.quality_string}, Accuracy: {pos.accuracy_h:.2f}m")
+        pos = gps.get_position()
+        if pos and pos.is_valid:
+            print(f"Lat: {pos.latitude}, Lon: {pos.longitude}")
+            print(f"Quality: {pos.quality_string}")
 
         gps.stop()
     """
 
-    def __init__(
-        self,
-        port: str = '/dev/ttyUSB1',
-        baudrate: int = 115200,
-        buffer_size: int = 100
-    ):
+    def __init__(self, port: str = '/dev/ttyUSB1', baudrate: int = 460800):
         """
         Initialize GPS driver.
 
         Args:
             port: Serial port path
-            baudrate: Serial baudrate
-            buffer_size: Number of positions to buffer
+            baudrate: Serial baudrate (default 460800 for Point One)
         """
         self.port = port
         self.baudrate = baudrate
-        self.buffer_size = buffer_size
 
         self._serial: Optional[serial.Serial] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
 
-        self._position_buffer: deque = deque(maxlen=buffer_size)
-        self._velocity_buffer: deque = deque(maxlen=buffer_size)
         self._latest_position: Optional[GPSPosition] = None
-        self._latest_velocity: Optional[GPSVelocity] = None
         self._lock = threading.Lock()
 
-        # Callbacks
+        # Callback for new positions
         self._position_callback: Optional[Callable[[GPSPosition], None]] = None
 
-        # Temporary parsing state
+        # Temporary parsing state for GST accuracy
         self._current_accuracy_h = 0.0
         self._current_accuracy_v = 0.0
 
@@ -200,15 +135,23 @@ class GPSDriver:
         with self._lock:
             return self._latest_position
 
-    def get_velocity(self) -> Optional[GPSVelocity]:
+    def wait_for_fix(self, timeout: float = 30.0) -> bool:
         """
-        Get the latest GPS velocity.
+        Wait for any GPS fix.
+
+        Args:
+            timeout: Maximum time to wait in seconds
 
         Returns:
-            GPSVelocity object or None if no velocity available
+            True if fix achieved, False if timeout
         """
-        with self._lock:
-            return self._latest_velocity
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            pos = self.get_position()
+            if pos and pos.is_valid:
+                return True
+            time.sleep(0.1)
+        return False
 
     def wait_for_rtk_fixed(self, timeout: float = 60.0) -> bool:
         """
@@ -231,11 +174,6 @@ class GPSDriver:
     def set_position_callback(self, callback: Callable[[GPSPosition], None]):
         """Set callback for new positions."""
         self._position_callback = callback
-
-    def get_position_history(self, count: int = 10) -> list:
-        """Get recent position history."""
-        with self._lock:
-            return list(self._position_buffer)[-count:]
 
     def _read_loop(self):
         """Main reading loop (runs in separate thread)."""
@@ -281,12 +219,10 @@ class GPSDriver:
 
             if msg_type in ('GPGGA', 'GNGGA'):
                 self._parse_gga(parts)
-            elif msg_type in ('GPRMC', 'GNRMC'):
-                self._parse_rmc(parts)
             elif msg_type in ('GPGST', 'GNGST'):
                 self._parse_gst(parts)
 
-        except (ValueError, IndexError) as e:
+        except (ValueError, IndexError):
             pass  # Ignore malformed sentences
 
     def _parse_gga(self, parts: list):
@@ -312,7 +248,6 @@ class GPSDriver:
 
         # Parse other fields
         satellites = int(parts[7]) if parts[7] else 0
-        hdop = float(parts[8]) if parts[8] else 99.99
         altitude = float(parts[9]) if parts[9] else 0.0
 
         position = GPSPosition(
@@ -322,48 +257,15 @@ class GPSDriver:
             altitude=altitude,
             quality=quality,
             satellites=satellites,
-            hdop=hdop,
             accuracy_h=self._current_accuracy_h,
             accuracy_v=self._current_accuracy_v
         )
 
         with self._lock:
             self._latest_position = position
-            self._position_buffer.append(position)
 
         if self._position_callback:
             self._position_callback(position)
-
-    def _parse_rmc(self, parts: list):
-        """
-        Parse RMC sentence (position and velocity).
-
-        Format: $GPRMC,time,status,lat,N/S,lon,E/W,speed,heading,date,mag_var,E/W,mode*checksum
-        """
-        if len(parts) < 12:
-            return
-
-        # Check validity
-        if parts[2] != 'A':
-            return  # Invalid
-
-        # Parse speed and heading
-        speed_knots = float(parts[7]) if parts[7] else 0.0
-        speed_ms = speed_knots * 0.514444  # Convert to m/s
-
-        heading_deg = float(parts[8]) if parts[8] else 0.0
-        heading_rad = math.radians(heading_deg)
-
-        velocity = GPSVelocity(
-            timestamp=time.time(),
-            speed=speed_ms,
-            heading=heading_rad,
-            valid=True
-        )
-
-        with self._lock:
-            self._latest_velocity = velocity
-            self._velocity_buffer.append(velocity)
 
     def _parse_gst(self, parts: list):
         """
@@ -377,9 +279,11 @@ class GPSDriver:
         try:
             lat_err = float(parts[6]) if parts[6] else 99.99
             lon_err = float(parts[7]) if parts[7] else 99.99
-            alt_err = float(parts[8].split('*')[0]) if parts[8] else 99.99
+            alt_err_str = parts[8].split('*')[0] if parts[8] else ""
+            alt_err = float(alt_err_str) if alt_err_str else 99.99
 
             # Horizontal accuracy is combination of lat/lon errors
+            import math
             self._current_accuracy_h = math.sqrt(lat_err**2 + lon_err**2)
             self._current_accuracy_v = alt_err
         except ValueError:
@@ -418,83 +322,16 @@ class GPSDriver:
         return self._running
 
 
-# Utility functions
-
-def calculate_utm_zone(longitude: float) -> int:
-    """Calculate UTM zone from longitude."""
-    return int((longitude + 180) / 6) + 1
-
-
-def gps_to_local(
-    position: GPSPosition,
-    origin: GPSPosition
-) -> Tuple[float, float]:
-    """
-    Convert GPS position to local coordinates relative to origin.
-    Uses flat-Earth approximation (valid for short distances).
-
-    Args:
-        position: Current GPS position
-        origin: Origin GPS position
-
-    Returns:
-        (x, y) in meters where x=East, y=North
-    """
-    # Earth radius at equator
-    R = 6378137.0
-
-    # Latitude correction
-    lat_rad = math.radians(origin.latitude)
-
-    # Meters per degree
-    m_per_deg_lat = R * math.pi / 180.0
-    m_per_deg_lon = m_per_deg_lat * math.cos(lat_rad)
-
-    dx = (position.longitude - origin.longitude) * m_per_deg_lon
-    dy = (position.latitude - origin.latitude) * m_per_deg_lat
-
-    return dx, dy
-
-
-def local_to_gps(
-    x: float,
-    y: float,
-    origin: GPSPosition
-) -> Tuple[float, float]:
-    """
-    Convert local coordinates to GPS position.
-
-    Args:
-        x: East offset in meters
-        y: North offset in meters
-        origin: Origin GPS position
-
-    Returns:
-        (latitude, longitude) in degrees
-    """
-    R = 6378137.0
-    lat_rad = math.radians(origin.latitude)
-
-    m_per_deg_lat = R * math.pi / 180.0
-    m_per_deg_lon = m_per_deg_lat * math.cos(lat_rad)
-
-    lat = origin.latitude + y / m_per_deg_lat
-    lon = origin.longitude + x / m_per_deg_lon
-
-    return lat, lon
-
-
 if __name__ == '__main__':
-    # Simple test
     import sys
 
     port = sys.argv[1] if len(sys.argv) > 1 else '/dev/ttyUSB1'
-    print(f"[GPS] Testing GPS on {port}...")
+    print(f"[GPS] Testing Point One RTK on {port}...")
 
     gps = GPSDriver(port)
     if gps.start():
         print("[GPS] Started successfully")
-        print("[GPS] Waiting for RTK fixed (max 30s)...")
+        print("[GPS] Waiting for position...")
 
         try:
             for _ in range(30):
@@ -503,10 +340,10 @@ if __name__ == '__main__':
                     print(f"[GPS] {pos.quality_string}: "
                           f"({pos.latitude:.6f}, {pos.longitude:.6f}) "
                           f"alt={pos.altitude:.1f}m "
-                          f"acc={pos.accuracy_h:.2f}m "
+                          f"acc_h={pos.accuracy_h:.2f}m "
                           f"sats={pos.satellites}")
                 else:
-                    print("[GPS] Waiting for position...")
+                    print("[GPS] No position yet...")
                 time.sleep(1.0)
         finally:
             gps.stop()

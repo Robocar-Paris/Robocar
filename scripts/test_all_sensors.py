@@ -19,8 +19,9 @@ import argparse
 sys.path.insert(0, '/home/borischeng/Robocar/Robocar_IA/src')
 
 from driver.lidar import LidarDriver
-from driver.gps import GPSDriver, gps_to_local
+from driver.gps import GPSDriver
 from driver.vesc_motor import VESCController
+from perception.transforms import GPSConverter
 
 try:
     import matplotlib.pyplot as plt
@@ -265,7 +266,8 @@ def test_visualization(tester: SensorTester):
     # Data storage
     gps_x_data = []
     gps_y_data = []
-    gps_origin_pos = [None]
+    gps_converter = GPSConverter()
+    gps_origin_set = [False]
 
     def update(frame):
         status = tester.get_status()
@@ -286,10 +288,11 @@ def test_visualization(tester: SensorTester):
         if tester.gps and tester.gps.is_running:
             pos = tester.gps.get_position()
             if pos and pos.quality > 0:
-                if gps_origin_pos[0] is None:
-                    gps_origin_pos[0] = pos
+                if not gps_origin_set[0]:
+                    gps_converter.set_origin(pos.latitude, pos.longitude)
+                    gps_origin_set[0] = True
 
-                x, y = gps_to_local(pos, gps_origin_pos[0])
+                x, y, _ = gps_converter.gps_to_local(pos.latitude, pos.longitude)
                 gps_x_data.append(x)
                 gps_y_data.append(y)
 
