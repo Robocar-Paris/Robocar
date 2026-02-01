@@ -9,7 +9,7 @@ Composants:
 
 from .lidar_simulator import LidarSimulator, LidarSimulatorConfig
 from .gps_simulator import GPSSimulator
-from .environment import Environment, Obstacle, create_parking_env, create_corridor_env
+from .environment import Environment, Obstacle, ObstacleType, create_parking_env, create_corridor_env
 
 __all__ = [
     'LidarSimulator',
@@ -17,6 +17,7 @@ __all__ = [
     'GPSSimulator',
     'Environment',
     'Obstacle',
+    'ObstacleType',
     'create_parking_env',
     'create_corridor_env',
 ]
