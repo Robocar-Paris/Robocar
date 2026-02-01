@@ -1,24 +1,43 @@
 """
-Drivers for robocar exploration components
-- Lidar LD19
-- GPS RTK Point One with Polaris or Centipede corrections
-- VESC Motor Controller
+Drivers for Robocar - Voiture RC autonome
+
+Composants:
+- GPS Point One RTK (gps.py)
+- LiDAR LD19 (lidar.py)
+- VESC Motor Controller (vesc_motor.py)
+
+Optionnel (corrections RTK):
+- Polaris Client (polaris_client.py)
+- NTRIP Client Centipede/RTK2GO (ntrip_client.py)
 """
 
-from .lidar import LidarDriver
+from .lidar import LidarDriver, LidarScan, LidarPoint
 from .gps import GPSDriver, GPSPosition
-from .gps_rtk import GPSRTKDriver
-from .polaris_client import PolarisClient, PolarisConfig
-from .ntrip_client import NTRIPClient, NTRIPConfig
+from .vesc_motor import VESCController, VESCState
+
+# Optional RTK components
+try:
+    from .gps_rtk import GPSRTKDriver
+    from .polaris_client import PolarisClient, PolarisConfig
+    from .ntrip_client import NTRIPClient, NTRIPConfig
+    RTK_AVAILABLE = True
+except ImportError:
+    RTK_AVAILABLE = False
 
 __all__ = [
+    # Core drivers
     'LidarDriver',
+    'LidarScan',
+    'LidarPoint',
     'GPSDriver',
     'GPSPosition',
+    'VESCController',
+    'VESCState',
+    # RTK (optional)
     'GPSRTKDriver',
     'PolarisClient',
     'PolarisConfig',
     'NTRIPClient',
     'NTRIPConfig',
-    'VESCController'
+    'RTK_AVAILABLE'
 ]

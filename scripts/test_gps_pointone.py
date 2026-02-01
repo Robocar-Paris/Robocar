@@ -13,9 +13,10 @@ Usage:
 import sys
 import time
 import argparse
+from pathlib import Path
 
 # Add src to path
-sys.path.insert(0, '/home/borischeng/Robocar/Robocar_IA/src')
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from driver.gps import GPSDriver
 
