@@ -38,8 +38,8 @@ def main():
     print("=" * 60)
     print()
 
-    # Créer le driver GPS
-    gps = GPSDriver(port=args.port, baudrate=115200)
+    # Créer le driver GPS (460800 baud pour Point One RTK)
+    gps = GPSDriver(port=args.port, baudrate=460800)
 
     # Démarrer le GPS
     print("[GPS] Connexion...")

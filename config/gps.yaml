@@ -1,0 +1,56 @@
+# GPS RTK Configuration
+# Point One Navigation with Polaris corrections
+
+gps:
+  # Serial port configuration
+  port: "/dev/ttyUSB0"      # GPS serial port for Point One
+  baudrate: 460800          # Baud rate for Point One RTK
+
+  # RTK quality thresholds
+  rtk_fixed_accuracy: 0.02  # Expected accuracy in meters for RTK Fixed (2cm)
+  rtk_float_accuracy: 0.50  # Expected accuracy in meters for RTK Float (50cm)
+  gps_accuracy: 2.5         # Expected accuracy for standard GPS (2.5m)
+
+  # Timeouts
+  fix_timeout: 30           # Seconds to wait for initial GPS fix
+  rtk_timeout: 120          # Seconds to wait for RTK fixed solution
+
+# Polaris RTK Correction Service
+# Point One Navigation's correction service for centimeter-level accuracy
+polaris:
+  # Your Polaris API key from Point One Navigation
+  api_key: "030ade8ca4f04445ba0a7bc20f5e53be"
+  device_id: 67
+
+  # Polaris server configuration (default va lues for Point One)
+  host: "polaris.pointonenav.com"
+  port: 2101
+
+  # Connection settings
+  reconnect_delay: 5.0      # Seconds between reconnection attempts
+  position_update: 10.0     # Seconds between position updates to Polaris
+
+# Position for initial RTK corrections (before first GPS fix)
+# Set this to your approximate location (school coordinates)
+# This helps Polaris send corrections from the nearest base station faster
+initial_position:
+  # Example: MUSIC IIM School Paris approximate coordinates
+  # Replace with your school's coordinates!
+  latitude: 48.8968         # Degrees North (Paris area)
+  longitude: 2.2190         # Degrees East
+  altitude: 35.0            # Meters above sea level
+
+# Antenna configuration (for IMU fusion)
+antenna:
+  # Lever arm from antenna to vehicle body center (meters)
+  # Coordinate system: X=forward, Y=left, Z=up
+  gnss_lever_arm:
+    x: 0.0
+    y: 0.0
+    z: 0.25                 # Antenna height above ground
+
+  # Device (IMU) lever arm from IMU to vehicle body center
+  device_lever_arm:
+    x: 0.0
+    y: 0.0
+    z: 0.10
