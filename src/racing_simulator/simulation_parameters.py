@@ -1,1 +1,0 @@
-RAY_COUNT = 50
