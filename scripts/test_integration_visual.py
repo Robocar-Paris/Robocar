@@ -373,9 +373,10 @@ class VisualIntegrationTest:
                         ax_slam.clear()
                         map_img = self.slam.get_map()
 
-                        # Afficher la carte
+                        # Extent dynamique base sur la config SLAM (40m par defaut)
+                        half_size = 20.0  # map_size_meters / 2
                         ax_slam.imshow(map_img, cmap='gray', origin='lower',
-                                      extent=[-20, 20, -20, 20])
+                                      extent=[-half_size, half_size, -half_size, half_size])
 
                         # Position robot sur la carte
                         slam_pose = self.slam.get_pose()
@@ -390,10 +391,13 @@ class VisualIntegrationTest:
                             st = np.array(self.slam_trajectory)
                             ax_slam.plot(st[:, 0], st[:, 1], 'g-', alpha=0.5)
 
-                        ax_slam.set_xlim(-20, 20)
-                        ax_slam.set_ylim(-20, 20)
+                        # Limites dynamiques basees sur l'environnement
+                        ax_slam.set_xlim(-half_size, half_size)
+                        ax_slam.set_ylim(-half_size, half_size)
                         ax_slam.set_aspect('equal')
-                        ax_slam.set_title('Carte SLAM', fontsize=14, fontweight='bold')
+                        ax_slam.grid(True, alpha=0.3)
+                        ax_slam.set_title(f'Carte SLAM - Robot: ({slam_pose.x:.1f}, {slam_pose.y:.1f})',
+                                         fontsize=12, fontweight='bold')
                         ax_slam.set_xlabel('X (metres)')
                         ax_slam.set_ylabel('Y (metres)')
 
