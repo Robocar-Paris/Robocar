@@ -1,0 +1,71 @@
+# Configuration pour le mode simulation
+# =====================================
+
+# Origine GPS (Epitech Paris - Le Kremlin-Bicetre)
+gps:
+  origin_latitude: 48.8156
+  origin_longitude: 2.3631
+  altitude: 35.0
+
+# Environnement par defaut
+environment:
+  name: epitech
+  width: 40.0
+  height: 40.0
+
+# Position de depart
+start_position:
+  x: 0.0
+  y: 0.0
+  theta: 0.0  # radians
+
+# Waypoints par defaut (coordonnees locales en metres)
+waypoints:
+  - x: 5.0
+    y: 0.0
+  - x: 10.0
+    y: 5.0
+  - x: 15.0
+    y: 10.0
+
+# Parametres de navigation
+navigation:
+  max_speed: 0.5              # Vitesse max normalisee (0-1)
+  min_speed: 0.1              # Vitesse min normalisee
+  waypoint_reached_dist: 0.5  # Distance pour considerer waypoint atteint (m)
+  obstacle_stop_dist: 0.5     # Distance arret obstacle (m)
+  obstacle_slow_dist: 1.5     # Distance ralentissement (m)
+  steering_gain: 2.0          # Gain de direction
+
+# Parametres du robot simule
+robot:
+  wheelbase: 0.26             # Empattement (m)
+  length: 0.40                # Longueur (m)
+  width: 0.25                 # Largeur (m)
+  max_velocity: 2.0           # Vitesse max (m/s)
+  max_steering: 0.5           # Braquage max (rad)
+
+# Parametres du LiDAR simule
+lidar:
+  min_range: 0.02             # Portee min (m)
+  max_range: 12.0             # Portee max (m)
+  angular_resolution: 1.0     # Resolution angulaire (deg)
+  scan_frequency: 10.0        # Frequence de scan (Hz)
+  noise_stddev: 0.01          # Bruit de mesure (m)
+  miss_rate: 0.02             # Taux d'echec (0-1)
+
+# Parametres du GPS simule
+gps_simulator:
+  rtk_mode: true              # Simule RTK FIXED
+  update_rate: 10.0           # Frequence de mise a jour (Hz)
+  rtk_accuracy: 0.02          # Precision RTK (m)
+  gps_accuracy: 2.5           # Precision GPS standard (m)
+
+# Visualisation
+visualization:
+  update_rate: 20.0           # Frequence de rafraichissement (Hz)
+  show_lidar: true            # Afficher points LiDAR
+  show_trajectory: true       # Afficher trajectoire
+  show_waypoints: true        # Afficher waypoints
+  trajectory_color: blue
+  robot_color: blue
