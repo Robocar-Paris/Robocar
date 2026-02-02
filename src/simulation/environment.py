@@ -259,6 +259,71 @@ def create_empty_env(width: float = 20, height: float = 20) -> Environment:
     return env
 
 
+def create_epitech_env() -> Environment:
+    """
+    Cree un environnement simulant les abords d'Epitech Paris (Le Kremlin-Bicetre).
+
+    Environnement de 40x40 metres avec:
+    - Murs de batiments
+    - Parking avec voitures
+    - Poteaux / lampadaires
+    - Obstacles divers
+
+    Coordonnees GPS de reference:
+    - Latitude:  48.8156
+    - Longitude: 2.3631
+    """
+    env = Environment(width=40, height=40)
+    env.add_boundary_walls()
+
+    # === BATIMENTS ===
+    # Mur sud (batiment principal)
+    env.add_wall(-15, -15, 15, -15)
+    # Extension batiment
+    env.add_wall(-18, -10, -15, -10)
+    env.add_wall(-18, -10, -18, -15)
+
+    # === PARKING COTE OUEST ===
+    # Voitures garees (rangee ouest)
+    env.add_box(-12, -8, 4.5, 2.0, 0)    # Voiture 1
+    env.add_box(-12, -4, 4.5, 2.0, 0)    # Voiture 2
+    env.add_box(-12, 0, 4.5, 2.0, 0)     # Voiture 3
+    env.add_box(-12, 4, 4.5, 2.0, 0)     # Voiture 4
+
+    # === PARKING COTE EST ===
+    # Voitures garees (rangee est)
+    env.add_box(12, -8, 4.5, 2.0, 0)     # Voiture 5
+    env.add_box(12, -4, 4.5, 2.0, 0)     # Voiture 6
+    env.add_box(12, 0, 4.5, 2.0, 0)      # Voiture 7
+
+    # === POTEAUX / LAMPADAIRES ===
+    env.add_cylinder(-5, 5, 0.2)          # Lampadaire 1
+    env.add_cylinder(0, 10, 0.2)          # Lampadaire 2
+    env.add_cylinder(5, 5, 0.2)           # Lampadaire 3
+    env.add_cylinder(10, 15, 0.2)         # Lampadaire 4
+    env.add_cylinder(-8, 12, 0.15)        # Poteau signalisation
+
+    # === OBSTACLES DIVERS ===
+    # Poubelles
+    env.add_cylinder(3, 2, 0.35)
+    env.add_cylinder(3.8, 2, 0.35)
+
+    # Banc
+    env.add_box(-3, 8, 1.8, 0.5, 0.0)
+
+    # Borne
+    env.add_box(8, 8, 0.5, 0.5, 0.0)
+
+    # Jardiniere
+    env.add_box(-6, 15, 2.0, 1.0, 0.2)
+
+    # === ZONE DE LIVRAISON (destination typique) ===
+    # Marquage au sol (pas d'obstacle, juste pour reference)
+    # Position: (15, 12) - coin nord-est
+
+    return env
+
+
 if __name__ == "__main__":
     # Test rapide
     env = create_parking_env()
