@@ -20,12 +20,20 @@ import struct
 
 
 try:
-    import pyvesc
-    from pyvesc import GetValues, SetDutyCycle, SetServoPos
+    from pyvesc import VESC
     PYVESC_AVAILABLE = True
+    PYVESC_NEW_API = True
 except ImportError:
-    PYVESC_AVAILABLE = False
-    print("[VESC] Warning: pyvesc not installed. Motor control disabled.")
+    try:
+        # Fallback to old API
+        import pyvesc
+        from pyvesc import GetValues, SetDutyCycle, SetServoPos
+        PYVESC_AVAILABLE = True
+        PYVESC_NEW_API = False
+    except ImportError:
+        PYVESC_AVAILABLE = False
+        PYVESC_NEW_API = False
+        print("[VESC] Warning: pyvesc not installed. Motor control disabled.")
 
 
 @dataclass
@@ -86,6 +94,7 @@ class VESCController:
         self.baudrate = baudrate
 
         self._serial: Optional[serial.Serial] = None
+        self._vesc = None  # For new API
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -115,14 +124,22 @@ class VESCController:
             return False
 
         try:
-            self._serial = serial.Serial(
-                port=self.port,
-                baudrate=self.baudrate,
-                timeout=0.1
-            )
-            self._running = True
-            self._thread = threading.Thread(target=self._update_loop, daemon=True)
-            self._thread.start()
+            if PYVESC_NEW_API:
+                # New pyvesc API (1.0+)
+                self._vesc = VESC(serial_port=self.port, baudrate=self.baudrate)
+                self._running = True
+                self._thread = threading.Thread(target=self._update_loop, daemon=True)
+                self._thread.start()
+            else:
+                # Old pyvesc API
+                self._serial = serial.Serial(
+                    port=self.port,
+                    baudrate=self.baudrate,
+                    timeout=0.1
+                )
+                self._running = True
+                self._thread = threading.Thread(target=self._update_loop, daemon=True)
+                self._thread.start()
 
             # Initialize to safe state
             self._set_duty_raw(0.0)
@@ -131,6 +148,9 @@ class VESCController:
             return True
         except serial.SerialException as e:
             print(f"[VESC] Failed to open serial port: {e}")
+            return False
+        except Exception as e:
+            print(f"[VESC] Failed to initialize: {e}")
             return False
 
     def stop(self):
@@ -144,12 +164,20 @@ class VESCController:
             self._thread.join(timeout=2.0)
 
         # Final safety stop
-        if self._serial:
+        try:
+            self._set_duty_raw(0.0)
+            self._set_servo_raw(0.5)
+        except:
+            pass
+
+        if self._vesc:
             try:
-                self._set_duty_raw(0.0)
-                self._set_servo_raw(0.5)
+                self._vesc.stop_heartbeat()
             except:
                 pass
+            self._vesc = None
+
+        if self._serial:
             self._serial.close()
             self._serial = None
 
@@ -163,6 +191,10 @@ class VESCController:
         # Apply safety limits
         duty = max(-self.MAX_DUTY_CYCLE, min(self.MAX_DUTY_CYCLE, duty))
         self._target_duty = duty
+
+    def set_duty_cycle(self, duty: float):
+        """Alias for set_duty (compatibility)."""
+        self.set_duty(duty)
 
     def set_servo(self, position: float):
         """
@@ -281,54 +313,77 @@ class VESCController:
 
     def _set_duty_raw(self, duty: float):
         """Send duty cycle command directly to VESC."""
-        if not self._serial or not PYVESC_AVAILABLE:
+        if not PYVESC_AVAILABLE:
             return
 
         try:
-            self._serial.write(pyvesc.encode(SetDutyCycle(duty)))
+            if PYVESC_NEW_API and self._vesc:
+                self._vesc.set_duty_cycle(duty)
+            elif self._serial:
+                self._serial.write(pyvesc.encode(SetDutyCycle(duty)))
         except Exception as e:
             print(f"[VESC] Duty write error: {e}")
 
     def _set_servo_raw(self, position: float):
         """Send servo command directly to VESC."""
-        if not self._serial or not PYVESC_AVAILABLE:
+        if not PYVESC_AVAILABLE:
             return
 
         try:
-            self._serial.write(pyvesc.encode(SetServoPos(position)))
+            if PYVESC_NEW_API and self._vesc:
+                self._vesc.set_servo(position)
+            elif self._serial:
+                self._serial.write(pyvesc.encode(SetServoPos(position)))
         except Exception as e:
             print(f"[VESC] Servo write error: {e}")
 
     def _read_state(self):
         """Read state from VESC."""
-        if not self._serial or not PYVESC_AVAILABLE:
+        if not PYVESC_AVAILABLE:
             return
 
         try:
-            # Request values
-            self._serial.write(pyvesc.encode_request(GetValues))
-
-            # Read response
-            buffer = b''
-            while self._serial.in_waiting > 0:
-                buffer += self._serial.read(self._serial.in_waiting)
-                time.sleep(0.001)
-
-            if buffer:
-                response, _ = pyvesc.decode(buffer)
-                if response:
+            if PYVESC_NEW_API and self._vesc:
+                # New API - use get_measurements()
+                measurements = self._vesc.get_measurements()
+                if measurements:
                     state = VESCState(
                         timestamp=time.time(),
-                        duty_cycle=getattr(response, 'duty_now', 0.0),
-                        rpm=getattr(response, 'rpm', 0.0),
-                        current=getattr(response, 'avg_motor_current', 0.0),
-                        voltage=getattr(response, 'v_in', 0.0),
-                        tachometer=getattr(response, 'tachometer', 0),
-                        temp_motor=getattr(response, 'temp_motor', 0.0),
-                        temp_mos=getattr(response, 'temp_mos', 0.0)
+                        duty_cycle=getattr(measurements, 'duty_now', 0.0) or 0.0,
+                        rpm=getattr(measurements, 'rpm', 0.0) or 0.0,
+                        current=getattr(measurements, 'avg_motor_current', 0.0) or 0.0,
+                        voltage=getattr(measurements, 'v_in', 0.0) or 0.0,
+                        tachometer=getattr(measurements, 'tachometer', 0) or 0,
+                        temp_motor=getattr(measurements, 'temp_motor', 0.0) or 0.0,
+                        temp_mos=getattr(measurements, 'temp_mos', 0.0) or 0.0
                     )
                     with self._lock:
                         self._latest_state = state
+            elif self._serial:
+                # Old API
+                self._serial.write(pyvesc.encode_request(GetValues))
+
+                # Read response
+                buffer = b''
+                while self._serial.in_waiting > 0:
+                    buffer += self._serial.read(self._serial.in_waiting)
+                    time.sleep(0.001)
+
+                if buffer:
+                    response, _ = pyvesc.decode(buffer)
+                    if response:
+                        state = VESCState(
+                            timestamp=time.time(),
+                            duty_cycle=getattr(response, 'duty_now', 0.0),
+                            rpm=getattr(response, 'rpm', 0.0),
+                            current=getattr(response, 'avg_motor_current', 0.0),
+                            voltage=getattr(response, 'v_in', 0.0),
+                            tachometer=getattr(response, 'tachometer', 0),
+                            temp_motor=getattr(response, 'temp_motor', 0.0),
+                            temp_mos=getattr(response, 'temp_mos', 0.0)
+                        )
+                        with self._lock:
+                            self._latest_state = state
 
         except Exception as e:
             pass  # Ignore read errors
