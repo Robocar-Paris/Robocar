@@ -27,6 +27,8 @@ import sys
 import os
 import time
 import argparse
+import serial
+import serial.serialutil
 from typing import Dict, List, Optional, Tuple
 
 # Ajouter src au path
@@ -249,6 +251,18 @@ class ComponentChecker:
             fail("Aucun port disponible (tous utilises)")
             return False, None
 
+        # Trier les ports: privilegier /dev/ttyUSB1 (port GPS typique)
+        # et mettre les ports avec numeros plus bas en premier
+        def port_priority(p):
+            if '/dev/ttyUSB1' in p:
+                return 0  # Priorite maximale pour ttyUSB1
+            try:
+                num = int(p.split('USB')[-1])
+                return num + 1
+            except:
+                return 100
+        available = sorted(available, key=port_priority)
+
         try:
             from driver.gps_rtk import GPSRTKDriver
         except ImportError:
@@ -258,6 +272,7 @@ class ComponentChecker:
                 fail(f"Driver GPS non disponible: {e}")
                 return False, None
 
+        failed_ports = []
         for port in available:
             info(f"Test sur {port}...")
             try:
@@ -282,16 +297,31 @@ class ComponentChecker:
                     self.detected_ports['gps'] = port
                     self.results['gps'] = True
                     return True, port
+                else:
+                    failed_ports.append((port, "echec connexion"))
 
+            except serial.serialutil.SerialException as e:
+                error_msg = str(e)
+                if "Input/output error" in error_msg:
+                    warn(f"{port}: Erreur I/O (port instable ou peripherique non pret)")
+                else:
+                    warn(f"{port}: {error_msg}")
+                failed_ports.append((port, error_msg))
             except Exception as e:
                 if self.verbose:
                     warn(f"{port}: {e}")
+                failed_ports.append((port, str(e)))
 
         fail("GPS non detecte")
+        if failed_ports:
+            info("Ports testes sans succes:")
+            for port, reason in failed_ports:
+                info(f"  - {port}: {reason}")
         info("Verifiez:")
         info("  - Connexion USB")
         info("  - Antenne GPS connectee")
         info("  - Le GPS est dehors ou pres d'une fenetre")
+        info("  - Essayez: sudo chmod 666 /dev/ttyUSB*")
         self.results['gps'] = False
         return False, None
 

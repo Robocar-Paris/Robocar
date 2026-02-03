@@ -136,23 +136,49 @@ class GPSRTKDriver:
         self._rtk_fixed_count = 0
         self._last_rtk_fixed_time = 0.0
 
-    def start(self) -> bool:
+    def start(self, auto_detect: bool = False) -> bool:
         """
         Start the GPS RTK driver.
+
+        Args:
+            auto_detect: If True and initial port fails, try other available ports
 
         Returns:
             True if successfully started
         """
-        # Open serial port
-        try:
-            self._serial = serial.Serial(
-                port=self.port,
-                baudrate=self.baudrate,
-                timeout=1.0
-            )
-            print(f"[GPS-RTK] Connected to {self.port} at {self.baudrate} baud")
-        except serial.SerialException as e:
-            print(f"[GPS-RTK] Failed to open serial port: {e}")
+        # Build list of ports to try
+        ports_to_try = [self.port]
+
+        if auto_detect:
+            try:
+                import serial.tools.list_ports
+                available = [p.device for p in serial.tools.list_ports.comports()
+                            if '/dev/ttyUSB' in p.device and p.device != self.port]
+                # Prioritize ttyUSB1 (typical GPS port), then by number
+                available.sort(key=lambda x: (0 if 'USB1' in x else 1, x))
+                ports_to_try.extend(available)
+            except ImportError:
+                pass
+
+        # Try each port
+        last_error = None
+        for port in ports_to_try:
+            try:
+                self._serial = serial.Serial(
+                    port=port,
+                    baudrate=self.baudrate,
+                    timeout=1.0
+                )
+                self.port = port  # Update to working port
+                print(f"[GPS-RTK] Connected to {port} at {self.baudrate} baud")
+                break
+            except serial.SerialException as e:
+                last_error = e
+                if "Input/output error" in str(e):
+                    print(f"[GPS-RTK] Port {port} has I/O error, trying next...")
+                continue
+        else:
+            print(f"[GPS-RTK] Failed to open serial port: {last_error}")
             return False
 
         self._running = True
