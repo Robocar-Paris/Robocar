@@ -70,10 +70,11 @@ class RealGPSAdapter(IGPSSensor):
     """Adaptateur pour le GPS RTK Point One reel."""
 
     def __init__(self, port: str = '/dev/ttyUSB0', baudrate: int = 460800,
-                 polaris_api_key: Optional[str] = None):
+                 polaris_api_key: Optional[str] = None, auto_detect: bool = True):
         self.port = port
         self.baudrate = baudrate
         self.polaris_api_key = polaris_api_key
+        self.auto_detect = auto_detect
         self._driver = None
         self._running = False
 
@@ -90,8 +91,11 @@ class RealGPSAdapter(IGPSSensor):
                 from driver import GPSDriver
                 self._driver = GPSDriver(self.port, self.baudrate)
 
-            result = self._driver.start()
+            result = self._driver.start(auto_detect=self.auto_detect)
             self._running = result
+            # Update port if auto-detection found a different one
+            if result and hasattr(self._driver, 'port'):
+                self.port = self._driver.port
             return result
         except Exception as e:
             print(f"[GPS] Erreur demarrage: {e}")

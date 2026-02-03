@@ -95,26 +95,53 @@ class GPSDriver:
         self._current_accuracy_h = 0.0
         self._current_accuracy_v = 0.0
 
-    def start(self) -> bool:
+    def start(self, auto_detect: bool = False) -> bool:
         """
         Start the GPS driver.
+
+        Args:
+            auto_detect: If True and initial port fails, try other available ports
 
         Returns:
             True if successfully started, False otherwise.
         """
-        try:
-            self._serial = serial.Serial(
-                port=self.port,
-                baudrate=self.baudrate,
-                timeout=1.0
-            )
-            self._running = True
-            self._thread = threading.Thread(target=self._read_loop, daemon=True)
-            self._thread.start()
-            return True
-        except serial.SerialException as e:
-            print(f"[GPS] Failed to open serial port: {e}")
-            return False
+        ports_to_try = [self.port]
+
+        if auto_detect:
+            # Ajouter d'autres ports USB disponibles
+            try:
+                import serial.tools.list_ports
+                available = [p.device for p in serial.tools.list_ports.comports()
+                            if '/dev/ttyUSB' in p.device and p.device != self.port]
+                # Trier: ttyUSB1 en premier (port GPS typique), puis par numero
+                available.sort(key=lambda x: (0 if 'USB1' in x else 1, x))
+                ports_to_try.extend(available)
+            except ImportError:
+                pass
+
+        last_error = None
+        for port in ports_to_try:
+            try:
+                self._serial = serial.Serial(
+                    port=port,
+                    baudrate=self.baudrate,
+                    timeout=1.0
+                )
+                self.port = port  # Mettre a jour le port utilise
+                self._running = True
+                self._thread = threading.Thread(target=self._read_loop, daemon=True)
+                self._thread.start()
+                if auto_detect and port != ports_to_try[0]:
+                    print(f"[GPS] Connected on alternate port: {port}")
+                return True
+            except serial.SerialException as e:
+                last_error = e
+                if "Input/output error" in str(e):
+                    print(f"[GPS] Port {port} has I/O error, trying next...")
+                continue
+
+        print(f"[GPS] Failed to open serial port: {last_error}")
+        return False
 
     def stop(self):
         """Stop the GPS driver."""
