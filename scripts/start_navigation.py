@@ -17,8 +17,12 @@ Le script effectue automatiquement:
 5. Evitement d'obstacles en temps reel
 
 Usage:
-    # Navigation vers une destination GPS
+    # Navigation vers une destination GPS (mode basique)
     python scripts/start_navigation.py \\
+        --target-lat 48.8970 --target-lon 2.2195
+
+    # Navigation avec SLAM (cartographie + A* + DWA) - RECOMMANDE
+    python scripts/start_navigation.py --slam \\
         --target-lat 48.8970 --target-lon 2.2195
 
     # Navigation avec fichier de waypoints
@@ -27,8 +31,8 @@ Usage:
     # Mode simulation (pour test sans hardware)
     python scripts/start_navigation.py --simulation --env epitech
 
-    # Avec clé Polaris pour RTK
-    python scripts/start_navigation.py \\
+    # Navigation SLAM avec RTK Polaris (precision 2cm)
+    python scripts/start_navigation.py --slam \\
         --target-lat 48.8970 --target-lon 2.2195 \\
         --polaris-key YOUR_API_KEY
 
@@ -256,6 +260,93 @@ class NavigationLauncher:
 
         return 0
 
+    def run_slam(self) -> int:
+        """Execute en mode SLAM avance."""
+        from navigation_controller_slam import SLAMNavigationController
+        from interface import RealLidarAdapter, RealGPSAdapter, RealMotorAdapter
+
+        log_info("Mode SLAM avance - Initialisation...")
+        log_info("  - Cartographie en temps reel")
+        log_info("  - Planification globale A*")
+        log_info("  - Evitement local DWA")
+
+        try:
+            log_info(f"LiDAR sur {self.lidar_port}...")
+            lidar = RealLidarAdapter(self.lidar_port)
+
+            log_info(f"GPS sur {self.gps_port}...")
+            gps = RealGPSAdapter(
+                self.gps_port,
+                polaris_api_key=self.args.polaris_key
+            )
+
+            log_info(f"VESC sur {self.vesc_port}...")
+            motor = RealMotorAdapter(self.vesc_port)
+
+        except Exception as e:
+            log_error(f"Erreur initialisation: {e}")
+            return 1
+
+        # Creer controleur SLAM
+        self.controller = SLAMNavigationController(lidar, gps, motor)
+
+        # Ajouter waypoints GPS
+        for lat, lon in self.waypoints:
+            if len(self.waypoints) == 1:
+                self.controller.set_destination_gps(lat, lon)
+            else:
+                self.controller.add_waypoint_gps(lat, lon)
+
+        # Afficher resume mission
+        print(f"\n{Colors.BOLD}=== MISSION SLAM ==={Colors.RESET}")
+        print(f"Mode: Navigation avec cartographie SLAM")
+        print(f"Destination(s):")
+        for i, (lat, lon) in enumerate(self.waypoints, 1):
+            print(f"  {i}. ({lat:.6f}, {lon:.6f})")
+
+        if self.args.polaris_key:
+            log_ok("RTK Polaris active (precision 2cm)")
+        else:
+            log_warn("RTK Polaris desactive (precision GPS standard)")
+
+        print()
+
+        # Confirmation
+        if not self.args.no_confirm:
+            print(f"{Colors.YELLOW}La voiture va construire une carte et naviguer.{Colors.RESET}")
+            print(f"{Colors.YELLOW}Assurez-vous que la zone est degagee!{Colors.RESET}")
+            response = input(f"\nDemarrer? [o/N] ").strip().lower()
+            if response not in ('o', 'oui', 'y', 'yes'):
+                log_info("Navigation annulee")
+                return 0
+
+        # Lancer navigation SLAM
+        log_nav("Demarrage de la navigation SLAM...")
+        self.running = True
+
+        try:
+            if self.args.no_gui:
+                self.controller.run()
+            else:
+                self.controller.run_with_visualization()
+            return 0
+        except KeyboardInterrupt:
+            log_warn("Interruption utilisateur")
+            return 2
+        except Exception as e:
+            log_error(f"Erreur navigation: {e}")
+            import traceback
+            traceback.print_exc()
+            return 1
+        finally:
+            if self.controller:
+                self.controller.shutdown()
+                # Sauvegarder la carte
+                try:
+                    self.controller.save_map('/tmp/robocar_map.png')
+                except:
+                    pass
+
     def run_real(self) -> int:
         """Execute en mode reel sur la voiture."""
         from navigation_controller import NavigationController
@@ -347,8 +438,11 @@ class NavigationLauncher:
         if not self.load_waypoints():
             return 1
 
-        # 3. Lancer navigation
-        return self.run_real()
+        # 3. Lancer navigation (SLAM ou basique)
+        if self.args.slam:
+            return self.run_slam()
+        else:
+            return self.run_real()
 
 
 def main():
@@ -378,6 +472,11 @@ Exemples:
         '--simulation', '-s',
         action='store_true',
         help='Mode simulation (sans hardware)'
+    )
+    mode_group.add_argument(
+        '--slam',
+        action='store_true',
+        help='Utiliser le controleur SLAM avance (cartographie + planification A* + DWA)'
     )
     mode_group.add_argument(
         '--env',
