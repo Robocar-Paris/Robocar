@@ -374,7 +374,7 @@ class VisualIntegrationTest:
                         map_img = self.slam.get_map()
 
                         # Extent dynamique base sur la config SLAM (40m par defaut)
-                        half_size = 20.0  # map_size_meters / 2
+                        half_size = 40.0  # map_size_meters / 2
                         ax_slam.imshow(map_img, cmap='gray', origin='lower',
                                       extent=[-half_size, half_size, -half_size, half_size])
 

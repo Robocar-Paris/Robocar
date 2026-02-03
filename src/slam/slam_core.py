@@ -165,7 +165,7 @@ class BreezySLAMWrapper(SLAMBase):
             dxy_mm, dtheta_degrees, dt = odometry
             self.slam.update(
                 scan_distances_mm,
-                velocity=(dxy_mm, dtheta_degrees, dt)
+                pose_change=(dxy_mm, dtheta_degrees, dt)
             )
         else:
             self.slam.update(scan_distances_mm)

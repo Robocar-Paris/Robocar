@@ -23,7 +23,7 @@ robot:
   motor:
     poles: 14
     gear_ratio: 1.0
-    max_duty_cycle: 0.2        # Safety limit (20%)
+    max_duty_cycle: 2        # Safety limit (20%)
 
 # Sensor mounting positions (relative to robot center)
 # Coordinate frame: X=forward, Y=left, Z=up
