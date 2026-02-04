@@ -95,6 +95,11 @@ class GPSDriver:
         self._current_accuracy_h = 0.0
         self._current_accuracy_v = 0.0
 
+        # Diagnostic counters
+        self._nmea_count = 0
+        self._gga_count = 0
+        self._last_quality = 0
+
     def start(self, auto_detect: bool = False) -> bool:
         """
         Start the GPS driver.
@@ -162,22 +167,53 @@ class GPSDriver:
         with self._lock:
             return self._latest_position
 
-    def wait_for_fix(self, timeout: float = 30.0) -> bool:
+    def wait_for_fix(self, timeout: float = 30.0, verbose: bool = True) -> bool:
         """
         Wait for any GPS fix.
 
         Args:
             timeout: Maximum time to wait in seconds
+            verbose: Print status updates
 
         Returns:
             True if fix achieved, False if timeout
         """
         start_time = time.time()
+        last_print = 0
+        initial_nmea = self._nmea_count
+
         while time.time() - start_time < timeout:
             pos = self.get_position()
+            elapsed = time.time() - start_time
+
+            # Print status every 2 seconds
+            if verbose and elapsed - last_print >= 2.0:
+                last_print = elapsed
+                nmea_received = self._nmea_count - initial_nmea
+                gga_received = self._gga_count
+
+                if pos:
+                    print(f"[GPS] {elapsed:.0f}s - Quality: {pos.quality_string}, "
+                          f"Sats: {pos.satellites}, NMEA: {nmea_received}, GGA: {gga_received}")
+                elif nmea_received > 0:
+                    quality_map = {0: "NO_FIX", 1: "GPS", 2: "DGPS", 4: "RTK_FIXED", 5: "RTK_FLOAT"}
+                    quality_str = quality_map.get(self._last_quality, f"({self._last_quality})")
+                    print(f"[GPS] {elapsed:.0f}s - Recoit NMEA ({nmea_received}), "
+                          f"GGA: {gga_received}, last quality: {quality_str}")
+                else:
+                    print(f"[GPS] {elapsed:.0f}s - Aucune trame NMEA recue! "
+                          f"Verifiez port={self.port}, baudrate={self.baudrate}")
+
             if pos and pos.is_valid:
+                if verbose:
+                    print(f"[GPS] Fix obtenu apres {elapsed:.1f}s!")
                 return True
             time.sleep(0.1)
+
+        if verbose:
+            nmea_total = self._nmea_count - initial_nmea
+            print(f"[GPS] Timeout ({timeout}s) - Pas de fix. "
+                  f"NMEA recues: {nmea_total}, GGA: {self._gga_count}")
         return False
 
     def wait_for_rtk_fixed(self, timeout: float = 60.0) -> bool:
@@ -229,6 +265,8 @@ class GPSDriver:
 
     def _parse_nmea(self, sentence: str):
         """Parse NMEA sentence."""
+        self._nmea_count += 1
+
         try:
             # Verify checksum
             if '*' in sentence:
@@ -245,6 +283,7 @@ class GPSDriver:
             msg_type = parts[0]
 
             if msg_type in ('GPGGA', 'GNGGA'):
+                self._gga_count += 1
                 self._parse_gga(parts)
             elif msg_type in ('GPGST', 'GNGST'):
                 self._parse_gst(parts)
@@ -263,6 +302,8 @@ class GPSDriver:
 
         # Parse quality first
         quality = int(parts[6]) if parts[6] else 0
+        self._last_quality = quality  # Track quality for diagnostics
+
         if quality == 0:
             return  # No fix
 
