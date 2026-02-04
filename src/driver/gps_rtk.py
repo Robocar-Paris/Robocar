@@ -25,6 +25,7 @@ Usage:
 import serial
 import threading
 import time
+import serial.tools.list_ports
 from typing import Optional, Callable
 from dataclasses import dataclass
 
@@ -151,7 +152,6 @@ class GPSRTKDriver:
 
         if auto_detect:
             try:
-                import serial.tools.list_ports
                 available = [p.device for p in serial.tools.list_ports.comports()
                             if '/dev/ttyUSB' in p.device and p.device != self.port]
                 # Prioritize ttyUSB1 (typical GPS port), then by number

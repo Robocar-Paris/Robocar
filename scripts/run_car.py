@@ -41,7 +41,7 @@ class RobocarController:
 
     # Configuration
     GPS_PORT = '/dev/ttyUSB0'
-    LIDAR_PORT = '/dev/ttyUSB1'
+    LIDAR_PORT = '/dev/ttyUSB0'
     VESC_PORT = '/dev/ttyACM0'
 
     # Parametres navigation
