@@ -129,6 +129,21 @@ class RealGPSAdapter(IGPSSensor):
     def is_running(self) -> bool:
         return self._running
 
+    def wait_for_fix(self, timeout: float = 60.0) -> bool:
+        """
+        Attend un fix GPS valide (delegue au driver avec feedback).
+
+        Args:
+            timeout: Temps max d'attente en secondes
+
+        Returns:
+            True si fix obtenu, False si timeout
+        """
+        if self._driver and hasattr(self._driver, 'wait_for_fix'):
+            return self._driver.wait_for_fix(timeout=timeout, verbose=True)
+        # Fallback vers implementation de base
+        return super().wait_for_fix(timeout)
+
 
 class RealMotorAdapter(IMotorController):
     """Adaptateur pour le controleur VESC reel."""
