@@ -57,8 +57,32 @@ sensors:
 
 # Safety parameters
 safety:
-  emergency_stop_distance: 0.3   # meters
-  warning_distance: 1.0          # meters
+  emergency_stop_distance: 0.3   # meters - ARRET IMMEDIAT
+  slow_distance: 1.0             # meters - ralentissement
+  warning_distance: 2.0          # meters - vigilance
   watchdog_timeout: 0.5          # seconds
   max_no_lidar_time: 1.0         # seconds before stopping
   max_no_gps_time: 5.0           # seconds before switching to local nav
+
+# Perception parameters
+perception:
+  lidar:
+    min_range: 0.05              # meters - ignore closer
+    max_range: 8.0               # meters - ignore further
+    min_intensity: 10            # minimum signal strength
+    angle_offset: 0.0            # radians - sensor mounting offset
+
+  obstacle_detection:
+    cluster_threshold: 0.3       # meters - max gap in cluster
+    min_cluster_points: 3        # minimum points for obstacle
+    wall_min_length: 0.5         # meters - to classify as wall
+    tracking_distance: 0.5       # meters - for obstacle matching
+    tracking_max_age: 10         # frames before forgetting
+
+# Navigation parameters
+navigation:
+  waypoint_reached_distance: 0.5  # meters
+  max_speed: 0.5                   # normalized [0-1]
+  min_speed: 0.1                   # normalized [0-1]
+  steering_gain: 2.0               # proportional gain
+  loop_rate: 20                    # Hz

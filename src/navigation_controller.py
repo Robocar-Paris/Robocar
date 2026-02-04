@@ -10,14 +10,45 @@ permettant d'utiliser le meme code de navigation en:
 
 import math
 import time
-from typing import List, Tuple, Optional
+import os
+from typing import List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass, field
+from pathlib import Path
+import numpy as np
+
+try:
+    import yaml
+    YAML_AVAILABLE = True
+except ImportError:
+    YAML_AVAILABLE = False
 
 from interface import (
     ILidarSensor, IGPSSensor, IMotorController,
     LidarData, GPSData,
     SimulatedLidarAdapter, SimulatedGPSAdapter, SimulatedMotorAdapter
 )
+
+# Import perception modules
+from perception.lidar_processor import LidarProcessor, ProcessedScan
+from perception.obstacle_detector import ObstacleDetector, Obstacle, ObstacleType
+
+
+# Dataclass locale pour la conversion vers le format du processeur
+@dataclass
+class _ProcessorLidarPoint:
+    """Point LiDAR pour le processeur."""
+    angle: float
+    distance: float
+    intensity: int
+    valid: bool
+
+
+@dataclass
+class _ProcessorLidarScan:
+    """Scan LiDAR pour le processeur."""
+    timestamp: float
+    points: List['_ProcessorLidarPoint']
+    scan_frequency: float
 
 
 @dataclass
@@ -73,10 +104,19 @@ class NavigationController:
     WAYPOINT_REACHED_DIST = 0.5      # Distance pour considerer waypoint atteint (m)
     MAX_SPEED = 0.5                   # Vitesse max normalisee
     MIN_SPEED = 0.1                   # Vitesse min normalisee
-    OBSTACLE_STOP_DIST = 0.5          # Distance arret obstacle (m)
-    OBSTACLE_SLOW_DIST = 1.5          # Distance ralentissement (m)
+    OBSTACLE_STOP_DIST = 0.3          # Distance arret obstacle (m) - EMERGENCY STOP
+    OBSTACLE_SLOW_DIST = 1.0          # Distance ralentissement (m)
+    OBSTACLE_WARN_DIST = 2.0          # Distance avertissement (m)
     STEERING_GAIN = 2.0               # Gain de direction
     LOOP_RATE = 20                    # Hz
+
+    # Zones angulaires pour detection d'obstacles (en radians)
+    # Convention: 0 = avant, pi/2 = gauche, -pi/2 = droite
+    FRONT_ZONE = (-math.pi/4, math.pi/4)       # -45° a +45°
+    FRONT_LEFT_ZONE = (math.pi/4, math.pi/2)   # +45° a +90°
+    FRONT_RIGHT_ZONE = (-math.pi/2, -math.pi/4) # -90° a -45°
+    LEFT_ZONE = (math.pi/2, 3*math.pi/4)       # +90° a +135°
+    RIGHT_ZONE = (-3*math.pi/4, -math.pi/2)    # -135° a -90°
 
     # Coordonnees de reference (Epitech Paris)
     ORIGIN_LAT = 48.8156
@@ -120,6 +160,104 @@ class NavigationController:
         # Origine GPS
         self.origin_lat = self.ORIGIN_LAT
         self.origin_lon = self.ORIGIN_LON
+
+        # === PERCEPTION MODULES ===
+        # Processeur LiDAR pour filtrage et traitement des donnees
+        self.lidar_processor = LidarProcessor(
+            min_range=0.05,      # 5cm minimum (evite les points trop proches)
+            max_range=8.0,       # 8m maximum
+            min_intensity=10,    # Filtre les points faibles
+            segmentation_threshold=0.3  # 30cm entre segments
+        )
+
+        # Detecteur d'obstacles pour clustering et classification
+        self.obstacle_detector = ObstacleDetector(
+            cluster_threshold=0.3,      # 30cm entre points d'un cluster
+            min_cluster_points=3,       # Minimum 3 points pour un obstacle
+            wall_min_length=0.5,        # 50cm pour classifier comme mur
+            tracking_distance=0.5,      # 50cm pour le tracking
+            tracking_max_age=10         # 10 frames avant d'oublier un obstacle
+        )
+
+        # Liste des obstacles detectes
+        self.detected_obstacles: List[Obstacle] = []
+        self.last_processed_scan: Optional[ProcessedScan] = None
+
+        # Charger la configuration si disponible
+        self._load_config()
+
+    def _load_config(self, config_path: Optional[str] = None):
+        """
+        Charge la configuration depuis robot.yaml.
+
+        Args:
+            config_path: Chemin vers le fichier de config (optionnel)
+        """
+        if not YAML_AVAILABLE:
+            print("[NAV] PyYAML non disponible, utilisation des valeurs par defaut")
+            return
+
+        # Chercher le fichier de config
+        if config_path is None:
+            # Chercher dans le repertoire config relatif au script
+            script_dir = Path(__file__).parent.parent
+            config_path = script_dir / 'config' / 'robot.yaml'
+
+        if not os.path.exists(config_path):
+            print(f"[NAV] Fichier config non trouve: {config_path}")
+            return
+
+        try:
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+
+            # Charger les parametres de securite
+            if 'safety' in config:
+                safety = config['safety']
+                self.OBSTACLE_STOP_DIST = safety.get('emergency_stop_distance', self.OBSTACLE_STOP_DIST)
+                self.OBSTACLE_SLOW_DIST = safety.get('slow_distance', self.OBSTACLE_SLOW_DIST)
+                self.OBSTACLE_WARN_DIST = safety.get('warning_distance', self.OBSTACLE_WARN_DIST)
+                print(f"[NAV] Config securite: stop={self.OBSTACLE_STOP_DIST}m, "
+                      f"slow={self.OBSTACLE_SLOW_DIST}m, warn={self.OBSTACLE_WARN_DIST}m")
+
+            # Charger les parametres de navigation
+            if 'navigation' in config:
+                nav = config['navigation']
+                self.WAYPOINT_REACHED_DIST = nav.get('waypoint_reached_distance', self.WAYPOINT_REACHED_DIST)
+                self.MAX_SPEED = nav.get('max_speed', self.MAX_SPEED)
+                self.MIN_SPEED = nav.get('min_speed', self.MIN_SPEED)
+                self.STEERING_GAIN = nav.get('steering_gain', self.STEERING_GAIN)
+                self.LOOP_RATE = nav.get('loop_rate', self.LOOP_RATE)
+
+            # Charger les parametres de perception
+            if 'perception' in config:
+                perc = config['perception']
+
+                # LiDAR processor
+                if 'lidar' in perc:
+                    lidar_cfg = perc['lidar']
+                    self.lidar_processor = LidarProcessor(
+                        min_range=lidar_cfg.get('min_range', 0.05),
+                        max_range=lidar_cfg.get('max_range', 8.0),
+                        min_intensity=lidar_cfg.get('min_intensity', 10),
+                        angle_offset=lidar_cfg.get('angle_offset', 0.0)
+                    )
+
+                # Obstacle detector
+                if 'obstacle_detection' in perc:
+                    obs_cfg = perc['obstacle_detection']
+                    self.obstacle_detector = ObstacleDetector(
+                        cluster_threshold=obs_cfg.get('cluster_threshold', 0.3),
+                        min_cluster_points=obs_cfg.get('min_cluster_points', 3),
+                        wall_min_length=obs_cfg.get('wall_min_length', 0.5),
+                        tracking_distance=obs_cfg.get('tracking_distance', 0.5),
+                        tracking_max_age=obs_cfg.get('tracking_max_age', 10)
+                    )
+
+            print("[NAV] Configuration chargee avec succes")
+
+        except Exception as e:
+            print(f"[NAV] Erreur chargement config: {e}")
 
     def set_initial_pose(self, x: float, y: float, theta: float):
         """Definit la pose initiale."""
@@ -182,67 +320,193 @@ class NavigationController:
         dy = wp.y - self.state.y
         return math.atan2(dy, dx)
 
+    def _normalize_angle(self, angle: float) -> float:
+        """
+        Normalise un angle entre -pi et +pi.
+        Convention: 0 = avant, +pi/2 = gauche, -pi/2 = droite
+        """
+        while angle > math.pi:
+            angle -= 2 * math.pi
+        while angle < -math.pi:
+            angle += 2 * math.pi
+        return angle
+
+    def _convert_lidar_angle(self, lidar_angle: float) -> float:
+        """
+        Convertit l'angle LiDAR (0-2pi, sens horaire depuis l'avant)
+        vers notre convention (-pi a +pi, 0 = avant).
+
+        Le LiDAR LD19 mesure de 0° a 360° dans le sens horaire.
+        On doit convertir pour que:
+        - 0° LiDAR -> 0 rad (avant)
+        - 90° LiDAR -> -pi/2 (droite)
+        - 270° LiDAR -> +pi/2 (gauche)
+        """
+        # Normaliser d'abord
+        normalized = self._normalize_angle(lidar_angle)
+        return normalized
+
+    def _is_angle_in_zone(self, angle: float, zone: Tuple[float, float]) -> bool:
+        """Verifie si un angle est dans une zone donnee."""
+        angle = self._normalize_angle(angle)
+        zone_min, zone_max = zone
+        if zone_min <= zone_max:
+            return zone_min <= angle <= zone_max
+        else:
+            # Zone qui traverse -pi/+pi
+            return angle >= zone_min or angle <= zone_max
+
+    def _convert_scan_to_processor_format(self, scan: LidarData) -> '_ProcessorLidarScan':
+        """Convertit le scan de l'interface vers le format du processeur."""
+        processor_points = []
+        for p in scan.points:
+            processor_points.append(_ProcessorLidarPoint(
+                angle=p.angle,
+                distance=p.distance,
+                intensity=p.intensity,
+                valid=p.valid
+            ))
+        return _ProcessorLidarScan(
+            timestamp=scan.timestamp,
+            points=processor_points,
+            scan_frequency=scan.scan_frequency
+        )
+
     def check_obstacles(self) -> Tuple[bool, float, float]:
         """
-        Verifie les obstacles via LiDAR.
+        Verifie les obstacles via LiDAR avec perception avancee.
+
+        Utilise LidarProcessor pour filtrer les donnees et
+        ObstacleDetector pour detecter et classifier les obstacles.
 
         Returns:
-            (obstacle_detected, min_distance, suggested_steering)
+            (danger_imminent, min_distance_front, suggested_steering)
         """
         scan = self.lidar.get_scan()
-        if not scan:
-            return False, float('inf'), 0.0
+        if not scan or len(scan.points) == 0:
+            # Pas de donnees LiDAR - DANGER, on arrete!
+            print("[PERCEPTION] Pas de donnees LiDAR!")
+            return True, 0.0, 0.0
 
         # Reinitialiser les points pour visualisation
         self.scan_points = []
 
+        # === ETAPE 1: Convertir et traiter le scan ===
+        try:
+            processor_scan = self._convert_scan_to_processor_format(scan)
+            processed = self.lidar_processor.process(processor_scan)
+            self.last_processed_scan = processed
+        except Exception as e:
+            print(f"[PERCEPTION] Erreur traitement scan: {e}")
+            return True, 0.0, 0.0
+
+        # === ETAPE 2: Detecter les obstacles ===
+        try:
+            self.detected_obstacles = self.obstacle_detector.detect(processed)
+        except Exception as e:
+            print(f"[PERCEPTION] Erreur detection obstacles: {e}")
+            self.detected_obstacles = []
+
+        # === ETAPE 3: Calculer les distances par zone ===
+        # Utiliser les points valides du scan traite
+        valid_mask = processed.valid_mask
+        angles = processed.angles
+        distances = processed.distances
+        points = processed.points
+
         min_dist_front = float('inf')
+        min_dist_front_left = float('inf')
+        min_dist_front_right = float('inf')
         min_dist_left = float('inf')
         min_dist_right = float('inf')
 
-        for point in scan.points:
-            if not point.valid:
+        for i in range(len(angles)):
+            if not valid_mask[i]:
                 continue
 
-            # Coordonnees dans le repere monde pour visualisation
-            angle_world = point.angle + self.state.theta
-            px = self.state.x + point.distance * math.cos(angle_world)
-            py = self.state.y + point.distance * math.sin(angle_world)
+            # Convertir en coordonnees monde pour visualisation
+            angle_world = angles[i] + self.state.theta
+            px = self.state.x + distances[i] * math.cos(angle_world)
+            py = self.state.y + distances[i] * math.sin(angle_world)
             self.scan_points.append((px, py))
 
-            angle_deg = math.degrees(point.angle)
+            # Convertir l'angle pour notre convention
+            angle_normalized = self._convert_lidar_angle(angles[i])
 
-            # Zone avant (-45 a +45 deg)
-            if -45 < angle_deg < 45:
-                if point.distance < min_dist_front:
-                    min_dist_front = point.distance
+            # Classifier dans les zones
+            if self._is_angle_in_zone(angle_normalized, self.FRONT_ZONE):
+                if distances[i] < min_dist_front:
+                    min_dist_front = distances[i]
 
-            # Zone gauche (45 a 90 deg)
-            if 45 < angle_deg < 90:
-                if point.distance < min_dist_left:
-                    min_dist_left = point.distance
+            if self._is_angle_in_zone(angle_normalized, self.FRONT_LEFT_ZONE):
+                if distances[i] < min_dist_front_left:
+                    min_dist_front_left = distances[i]
 
-            # Zone droite (-90 a -45 deg)
-            if -90 < angle_deg < -45:
-                if point.distance < min_dist_right:
-                    min_dist_right = point.distance
+            if self._is_angle_in_zone(angle_normalized, self.FRONT_RIGHT_ZONE):
+                if distances[i] < min_dist_front_right:
+                    min_dist_front_right = distances[i]
 
-        # Determiner la direction d'evitement
+            if self._is_angle_in_zone(angle_normalized, self.LEFT_ZONE):
+                if distances[i] < min_dist_left:
+                    min_dist_left = distances[i]
+
+            if self._is_angle_in_zone(angle_normalized, self.RIGHT_ZONE):
+                if distances[i] < min_dist_right:
+                    min_dist_right = distances[i]
+
+        # === ETAPE 4: Verifier les obstacles detectes ===
+        danger_from_obstacles = False
+        nearest_obstacle_dist = float('inf')
+
+        for obs in self.detected_obstacles:
+            if obs.min_distance < self.OBSTACLE_STOP_DIST:
+                danger_from_obstacles = True
+            if obs.min_distance < nearest_obstacle_dist:
+                nearest_obstacle_dist = obs.min_distance
+
+        # === ETAPE 5: Determiner la direction d'evitement ===
         steering = 0.0
-        if min_dist_front < self.OBSTACLE_SLOW_DIST:
-            # Tourner vers le cote le plus libre
-            if min_dist_left > min_dist_right:
-                steering = 0.5  # Tourner a gauche
-            else:
-                steering = -0.5  # Tourner a droite
 
-        obstacle_detected = min_dist_front < self.OBSTACLE_STOP_DIST
+        # Distance effective devant (prend en compte aussi les cotes)
+        effective_front_dist = min(
+            min_dist_front,
+            min_dist_front_left * 0.8,  # Pondere les cotes
+            min_dist_front_right * 0.8
+        )
+
+        if effective_front_dist < self.OBSTACLE_WARN_DIST:
+            # Calculer un score pour chaque direction
+            left_score = min_dist_front_left + min_dist_left * 0.5
+            right_score = min_dist_front_right + min_dist_right * 0.5
+
+            # Tourner vers le cote le plus libre
+            if left_score > right_score:
+                # Plus de place a gauche
+                avoidance_strength = 1.0 - (effective_front_dist / self.OBSTACLE_WARN_DIST)
+                steering = 0.3 + 0.5 * avoidance_strength  # 0.3 a 0.8
+            else:
+                # Plus de place a droite
+                avoidance_strength = 1.0 - (effective_front_dist / self.OBSTACLE_WARN_DIST)
+                steering = -(0.3 + 0.5 * avoidance_strength)  # -0.3 a -0.8
+
+        # === ETAPE 6: Determiner si danger imminent ===
+        danger_imminent = (
+            min_dist_front < self.OBSTACLE_STOP_DIST or
+            danger_from_obstacles or
+            (min_dist_front_left < self.OBSTACLE_STOP_DIST * 0.7) or
+            (min_dist_front_right < self.OBSTACLE_STOP_DIST * 0.7)
+        )
 
         # Mettre a jour l'etat
-        self.state.obstacle_detected = obstacle_detected
-        self.state.obstacle_distance = min_dist_front
+        self.state.obstacle_detected = danger_imminent
+        self.state.obstacle_distance = min(min_dist_front, nearest_obstacle_dist)
 
-        return obstacle_detected, min_dist_front, steering
+        # Debug info
+        if self.mode == 'car' and danger_imminent:
+            print(f"\n[PERCEPTION] DANGER! front={min_dist_front:.2f}m, "
+                  f"left={min_dist_front_left:.2f}m, right={min_dist_front_right:.2f}m")
+
+        return danger_imminent, effective_front_dist, steering
 
     def compute_control(self, wp: Waypoint) -> Tuple[float, float]:
         """
@@ -333,6 +597,8 @@ class NavigationController:
         """
         Execute une iteration de navigation.
 
+        Logique amelioree avec evitement reactif et securite renforcee.
+
         Returns:
             True si navigation en cours, False si terminee
         """
@@ -355,26 +621,53 @@ class NavigationController:
                 return False
             return True
 
-        # Verifier obstacles
-        obstacle, obs_dist, avoid_steering = self.check_obstacles()
+        # === PERCEPTION: Verifier obstacles ===
+        danger_imminent, obs_dist, avoid_steering = self.check_obstacles()
 
-        if obstacle:
-            # STOP - obstacle trop proche
+        # === SECURITE: Arret d'urgence si danger imminent ===
+        if danger_imminent:
             self.motor.set_speed(0)
-            self.motor.set_steering(avoid_steering)
+            # Continuer a tourner pour eviter l'obstacle
+            if abs(avoid_steering) > 0.1:
+                self.motor.set_steering(avoid_steering)
+            else:
+                # Si pas de direction claire, reculer un peu en tournant
+                self.motor.set_steering(0.5 if avoid_steering >= 0 else -0.5)
             return True
 
-        # Calculer commandes de navigation
-        speed, steering = self.compute_control(wp)
+        # === NAVIGATION: Calculer commandes vers waypoint ===
+        nav_speed, nav_steering = self.compute_control(wp)
 
-        # Ajuster pour evitement
-        if obs_dist < self.OBSTACLE_SLOW_DIST:
-            speed *= 0.5
-            steering += avoid_steering * 0.5
+        # === FUSION: Combiner navigation et evitement ===
+        final_speed = nav_speed
+        final_steering = nav_steering
 
-        # Appliquer commandes
-        self.motor.set_speed(speed)
-        self.motor.set_steering(steering)
+        if obs_dist < self.OBSTACLE_WARN_DIST:
+            # Zone de vigilance - adapter vitesse et direction
+
+            # Facteur de ralentissement progressif
+            slowdown = (obs_dist - self.OBSTACLE_STOP_DIST) / (self.OBSTACLE_WARN_DIST - self.OBSTACLE_STOP_DIST)
+            slowdown = max(0.2, min(1.0, slowdown))  # Entre 20% et 100%
+
+            # Appliquer ralentissement
+            final_speed = nav_speed * slowdown
+
+            # Mixer evitement et navigation
+            if obs_dist < self.OBSTACLE_SLOW_DIST:
+                # Plus proche = plus d'evitement
+                avoidance_weight = 1.0 - (obs_dist / self.OBSTACLE_SLOW_DIST)
+                avoidance_weight = max(0.0, min(0.8, avoidance_weight))
+
+                # Combiner les deux directions
+                final_steering = (1 - avoidance_weight) * nav_steering + avoidance_weight * avoid_steering
+
+        # Limiter les valeurs
+        final_speed = max(self.MIN_SPEED, min(self.MAX_SPEED, final_speed))
+        final_steering = max(-1.0, min(1.0, final_steering))
+
+        # === APPLIQUER COMMANDES ===
+        self.motor.set_speed(final_speed)
+        self.motor.set_steering(final_steering)
 
         return True
 
