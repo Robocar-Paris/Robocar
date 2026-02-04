@@ -14,7 +14,7 @@ robot:
 
   # Kinematic constraints
   constraints:
-    max_velocity: 2.0          # m/s
+    max_velocity: 1.0          # m/s
     max_acceleration: 1.0      # m/s²
     max_steering_angle: 0.3    # radians (~17 degrees)
     min_turning_radius: 0.5    # meters

@@ -15,23 +15,20 @@ GetValues = None
 
 try:
     import pyvesc
-    from pyvesc.protocol.base import VESCMessage # On a besoin de ca pour definir nos propres messages
+    from pyvesc.protocol.base import VESCMessage 
     
-    # 1. On essaye d'importer SetDutyCycle (qui semble marcher)
+    # 1. On essaye d'importer SetDutyCycle
     try:
         from pyvesc.VESC.messages.setters import SetDutyCycle
     except ImportError:
-        # Si manquant, on le definit nous-memes
         class SetDutyCycle(VESCMessage):
             id = 5
             fields = [('duty', 'i', 100000)]
 
-    # 2. On essaye d'importer SetServoPos (qui pose probleme)
+    # 2. On essaye d'importer SetServoPos
     try:
         from pyvesc.VESC.messages.setters import SetServoPos
     except ImportError:
-        print("[VESC] Creation locale de la commande SetServoPos")
-        # DEFINITION LOCALE DE LA COMMANDE MANQUANTE
         class SetServoPos(VESCMessage):
             id = 12
             fields = [('pos', 'h', 1000)]
@@ -64,10 +61,17 @@ class VESCState:
     temp_mos: float
 
 class VESCController:
-    MAX_DUTY_CYCLE = 0.2
+    # ====================================================================
+    #                     CONFIGURATION DU MOTEUR
+    # ====================================================================
+    # SI LA VOITURE RECULE AU LIEU D'AVANCER : Changez False en True (ou l'inverse)
+    INVERSER_MOTEUR = False  
+    
+    MAX_DUTY_CYCLE = 0.1     # VITESSE (0.1 = 10% de puissance)
     MAX_STEERING = 0.3
     RAMP_STEP = 0.02
     RAMP_INTERVAL = 0.02
+    # ====================================================================
 
     def __init__(self, port: str = '/dev/ttyACM0', baudrate: int = 115200):
         self.port = port
@@ -119,8 +123,19 @@ class VESCController:
             self._serial.close()
 
     def set_speed(self, speed: float):
-        """Interface standard: speed entre -1.0 et 1.0"""
-        duty = max(-1.0, min(1.0, speed)) * self.MAX_DUTY_CYCLE
+        """
+        Commande la vitesse.
+        NOTE: On force la marche avant (abs) et on applique l'inversion si demandée.
+        """
+        # 1. On prend la valeur absolue pour "Forcer l'avancée" (Hack GPS)
+        target = abs(speed)
+        
+        # 2. On applique l'inversion configurée en haut du fichier
+        if self.INVERSER_MOTEUR:
+            target = -target
+            
+        # 3. On applique la limite de puissance
+        duty = max(-1.0, min(1.0, target)) * self.MAX_DUTY_CYCLE
         self.set_duty(duty)
 
     def set_steering(self, steering: float):
