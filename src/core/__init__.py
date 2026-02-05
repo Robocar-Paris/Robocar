@@ -7,4 +7,4 @@ Core infrastructure module.
 """
 
 from .state_machine import StateMachine, RobotState, StateEvent
-from .safety import SafetyMonitor, SafetyConfig, SafetyStatus
+from .safety import SafetyMonitor, SafetyConfig, SafetyLevel
