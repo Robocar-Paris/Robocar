@@ -30,8 +30,11 @@ torchvision>=0.11.0
 # Data analysis (optionnel - pour training)
 pandas>=1.1.0
 
-# DepthAI camera (optionnel - pour OAK camera)
-# depthai>=2.17.0
+# DepthAI camera (OAK-D Lite for depth sensing)
+depthai>=2.17.0
+
+# Web dashboard (Flask server for visualization)
+flask>=2.0.0
 
 # Visualization (optionnel)
 matplotlib>=3.3.0

@@ -27,6 +27,13 @@ breezyslam>=1.0
 # Data analysis (optionnel)
 pandas>=1.1.0,<2.0
 
+# DepthAI camera (OAK-D Lite for depth sensing)
+# Note: depthai requires specific version for Jetson ARM64
+depthai>=2.17.0
+
+# Web dashboard (Flask server for PC browser visualization)
+flask>=2.0.0,<3.0
+
 # Visualization (optionnel)
 matplotlib>=3.3.0,<4.0
 
