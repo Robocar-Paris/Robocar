@@ -12,6 +12,7 @@ PYVESC_AVAILABLE = False
 SetDutyCycle = None
 SetServoPos = None
 GetValues = None
+SetCurrentBrake = None
 
 try:
     import pyvesc
@@ -41,6 +42,14 @@ try:
             id = 4
             fields = []
 
+    # 4. On essaye d'importer SetCurrentBrake (POUR LE FREINAGE ACTIF)
+    try:
+        from pyvesc.VESC.messages.setters import SetCurrentBrake
+    except ImportError:
+        class SetCurrentBrake(VESCMessage):
+            id = 7
+            fields = [('current', 'i', 1000)]
+
     PYVESC_AVAILABLE = True
     print("[VESC] Driver charge (Mode Autonome)")
 
@@ -67,7 +76,7 @@ class VESCController:
     # SI LA VOITURE RECULE AU LIEU D'AVANCER : Changez False en True (ou l'inverse)
     INVERSER_MOTEUR = False  
     
-    MAX_DUTY_CYCLE = 0.1     # VITESSE (0.1 = 10% de puissance)
+    MAX_DUTY_CYCLE = 0.05     # VITESSE (0.1 = 10% de puissance)
     MAX_STEERING = 0.3
     RAMP_STEP = 0.02
     RAMP_INTERVAL = 0.02
@@ -138,6 +147,24 @@ class VESCController:
         duty = max(-1.0, min(1.0, target)) * self.MAX_DUTY_CYCLE
         self.set_duty(duty)
 
+    def brake(self, current: float = 20.0):
+        """
+        Freinage actif avec un courant spécifique (Ampères).
+        Contrairement à set_speed(0) qui met en roue libre, ceci force le moteur à s'arrêter.
+        """
+        # Note: Le courant de freinage doit être positif dans la commande PyVESC,
+        # mais le VESC le gère comme une force opposée au mouvement.
+        if self._serial and 'SetCurrentBrake' in globals() and SetCurrentBrake:
+            try:
+                # On envoie la commande de freinage
+                self._serial.write(pyvesc.encode(SetCurrentBrake(abs(current))))
+                # IMPORTANT : On reset la consigne de vitesse pour que le loop
+                # de ramping ne relance pas le moteur immédiatement
+                self._target_duty = 0.0 
+                self._current_duty = 0.0
+            except Exception as e:
+                print(f"[VESC] Erreur freinage: {e}")
+
     def set_steering(self, steering: float):
         """Interface standard: steering entre -1.0 (gauche) et 1.0 (droite)"""
         servo_pos = 0.5 - (steering * 0.5) 
@@ -162,6 +189,7 @@ class VESCController:
         while self._running:
             try:
                 now = time.time()
+                # Gestion du ramping (accélération progressive)
                 if now - last_ramp >= self.RAMP_INTERVAL:
                     self._ramp_duty()
                     last_ramp = now
@@ -212,3 +240,4 @@ class VESCController:
                     with self._lock:
                         self._latest_state = state
         except: pass
+

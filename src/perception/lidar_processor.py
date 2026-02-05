@@ -7,7 +7,6 @@ from typing import List, Tuple, Optional
 from dataclasses import dataclass
 import numpy as np
 
-# Import from drivers if available, otherwise define locally
 try:
     from lidar_processor import LidarScan, LidarPoint
 except ImportError:
@@ -89,8 +88,8 @@ class LidarProcessor:
         # --- FILTRAGE DISTANCE (CORRECTION CHASSIS) ---
         # On ignore tout ce qui est a moins de 40cm (0.40m)
         # Cela evite que la voiture detecte son propre nez et recule par peur.
-        valid_mask &= (distances >= 0.40)
-        
+        valid_mask &= (distances >= 0.15)
+
         # On ignore ce qui est trop loin
         valid_mask &= (distances <= self.max_range)
         # ---------------------------------------------

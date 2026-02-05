@@ -172,8 +172,7 @@ class RealMotorAdapter(IMotorController):
 
     def set_speed(self, speed: float):
         if self._controller:
-            # Convertir [-1, 1] en duty cycle VESC
-            duty = max(-1.0, min(1.0, speed)) * 0.15  # Limite a 15% duty
+            duty = max(-1.0, min(1.0, speed)) * -0.15
             self._controller.set_duty_cycle(duty)
 
     def set_steering(self, steering: float):
