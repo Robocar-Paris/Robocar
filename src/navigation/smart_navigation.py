@@ -2,13 +2,13 @@
 Smart Navigation Module for Robocar
 
 Provides autonomous navigation to GPS waypoints with smart obstacle avoidance
-using OAK-D Lite depth sensing.
+using LiDAR sensing (no camera required).
 
 Features:
 - GPS navigation with arrival detection
-- Smart obstacle avoidance (depth sector analysis)
+- Smart obstacle avoidance (LiDAR sector analysis)
 - Integration with VESC motor control
-- Real-time status updates for visualization
+- Real-time status updates
 
 Usage:
     from navigation.smart_navigation import SmartNavigator
@@ -16,7 +16,7 @@ Usage:
     navigator = SmartNavigator(
         vesc=vesc_controller,
         gps=gps_driver,
-        camera=oak_camera
+        lidar=lidar_driver
     )
 
     # Navigate to target
@@ -29,8 +29,8 @@ Usage:
 import math
 import time
 import threading
-from typing import Optional, Callable, Tuple
-from dataclasses import dataclass, field
+from typing import Optional, Callable, Tuple, List
+from dataclasses import dataclass
 from enum import Enum
 
 
@@ -45,10 +45,14 @@ class NavigationConfig:
     slow_speed: float = 0.2               # Speed when obstacle detected
     min_speed: float = 0.1                # Minimum speed
 
-    # Obstacle avoidance (using depth camera)
+    # Obstacle avoidance (using LiDAR)
     warning_distance_m: float = 1.5       # Start avoiding at this distance
     critical_distance_m: float = 0.5      # Must stop/turn at this distance
     # Note: Emergency stop at 0.3m is handled by SafetyMonitor
+
+    # LiDAR sector analysis (angles in radians)
+    front_angle_range: float = 0.5236     # +/- 30 degrees = pi/6
+    side_angle_range: float = 1.0472      # 60 degrees = pi/3
 
     # Steering
     gps_steering_gain: float = 2.0        # Gain for GPS heading correction
@@ -74,8 +78,22 @@ class NavigationAction(Enum):
 
 
 @dataclass
+class LidarSectorAnalysis:
+    """Result of LiDAR sector analysis for obstacle avoidance."""
+    front_min_distance: float      # Minimum distance in front sector
+    left_min_distance: float       # Minimum distance in left sector
+    right_min_distance: float      # Minimum distance in right sector
+    front_avg_distance: float      # Average distance in front sector
+    left_avg_distance: float       # Average distance in left sector
+    right_avg_distance: float      # Average distance in right sector
+    recommended_direction: str     # 'left', 'right', or 'straight'
+    obstacle_detected: bool        # True if obstacle in warning zone
+    timestamp: float
+
+
+@dataclass
 class NavigationStatus:
-    """Real-time navigation status for visualization."""
+    """Real-time navigation status."""
     # Position
     current_lat: float = 0.0
     current_lon: float = 0.0
@@ -88,7 +106,7 @@ class NavigationStatus:
     current_heading_deg: float = 0.0
     heading_error_deg: float = 0.0
 
-    # Obstacle avoidance
+    # Obstacle avoidance (from LiDAR)
     obstacle_detected: bool = False
     obstacle_distance_m: float = float('inf')
     left_sector_distance_m: float = float('inf')
@@ -110,10 +128,12 @@ class SmartNavigator:
     """
     Smart autonomous navigator with GPS targeting and obstacle avoidance.
 
+    Uses LiDAR for obstacle detection (no camera required).
+
     Integrates:
     - VESC motor control for speed/steering
     - GPS RTK for positioning
-    - OAK-D Lite depth camera for obstacle avoidance
+    - LiDAR for obstacle avoidance
     - SafetyMonitor (external) for emergency stops
     """
 
@@ -124,7 +144,7 @@ class SmartNavigator:
         self,
         vesc,          # VESCController instance
         gps,           # GPSRTKDriver instance
-        camera,        # OakDCamera instance
+        lidar,         # LidarDriver instance
         config: Optional[NavigationConfig] = None,
         safety_monitor=None  # Optional SafetyMonitor for emergency stops
     ):
@@ -134,13 +154,13 @@ class SmartNavigator:
         Args:
             vesc: VESC motor controller
             gps: GPS RTK driver
-            camera: OAK-D camera driver
+            lidar: LiDAR driver (LD19)
             config: Navigation configuration
             safety_monitor: Safety monitor (optional, for emergency callbacks)
         """
         self.vesc = vesc
         self.gps = gps
-        self.camera = camera
+        self.lidar = lidar
         self.config = config or NavigationConfig()
         self.safety_monitor = safety_monitor
 
@@ -153,7 +173,7 @@ class SmartNavigator:
         self._nav_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
-        # Status for visualization
+        # Status
         self._status = NavigationStatus()
         self._start_time = 0.0
 
@@ -179,10 +199,9 @@ class SmartNavigator:
         Main navigation function that:
         1. Gets current GPS position
         2. Checks arrival condition (< arrival_radius)
-        3. Analyzes depth map for obstacles
+        3. Analyzes LiDAR for obstacles
         4. Decides: Navigate to GPS or Avoid obstacle
         5. Sends commands to VESC
-        6. Updates dashboard
 
         Args:
             target_lat: Target latitude (degrees)
@@ -229,7 +248,6 @@ class SmartNavigator:
         self._nav_thread.start()
 
         if blocking:
-            # Wait for completion
             self._nav_thread.join(timeout=timeout_s + 5.0)
             return self._status.action == NavigationAction.ARRIVED
         else:
@@ -242,19 +260,107 @@ class SmartNavigator:
         # Stop motors
         self.vesc.set_speed(0)
         self.vesc.set_steering(0)
-        self.vesc.brake(10.0)  # Light brake
+        self.vesc.brake(10.0)
 
         if self._nav_thread:
             self._nav_thread.join(timeout=2.0)
 
         print("[NAV] Navigation stopped")
 
+    def _analyze_lidar_sectors(self) -> Optional[LidarSectorAnalysis]:
+        """
+        Analyze LiDAR scan data by sectors (front, left, right).
+
+        Returns:
+            LidarSectorAnalysis with sector distances and recommendation
+        """
+        scan = self.lidar.get_scan(timeout=0.1)
+        if not scan or not scan.points:
+            return None
+
+        # Sector definitions (angles in radians from front)
+        # Front: -30° to +30° (0 is forward)
+        # Left: +30° to +90°
+        # Right: -90° to -30°
+        front_min = math.pi / 6   # 30 degrees
+        side_max = math.pi / 2    # 90 degrees
+
+        front_distances = []
+        left_distances = []
+        right_distances = []
+
+        for point in scan.points:
+            if not point.valid or point.distance < 0.05:
+                continue
+
+            # Convert angle to standard form (-pi to pi, 0 = forward)
+            angle = point.angle
+            # Normalize angle to -pi to pi
+            while angle > math.pi:
+                angle -= 2 * math.pi
+            while angle < -math.pi:
+                angle += 2 * math.pi
+
+            distance = point.distance
+
+            # Classify into sectors
+            if abs(angle) < front_min:
+                # Front sector
+                front_distances.append(distance)
+            elif front_min <= angle < side_max:
+                # Left sector
+                left_distances.append(distance)
+            elif -side_max < angle <= -front_min:
+                # Right sector
+                right_distances.append(distance)
+
+        # Calculate statistics
+        def safe_min(lst):
+            return min(lst) if lst else float('inf')
+
+        def safe_avg(lst):
+            return sum(lst) / len(lst) if lst else float('inf')
+
+        front_min_dist = safe_min(front_distances)
+        left_min_dist = safe_min(left_distances)
+        right_min_dist = safe_min(right_distances)
+
+        front_avg_dist = safe_avg(front_distances)
+        left_avg_dist = safe_avg(left_distances)
+        right_avg_dist = safe_avg(right_distances)
+
+        # Determine if obstacle detected
+        obstacle_detected = front_min_dist < self.config.warning_distance_m
+
+        # Recommend direction based on most open space
+        if not obstacle_detected:
+            recommended = 'straight'
+        elif left_avg_dist > right_avg_dist and left_min_dist > self.config.critical_distance_m:
+            recommended = 'left'
+        elif right_avg_dist > left_avg_dist and right_min_dist > self.config.critical_distance_m:
+            recommended = 'right'
+        elif left_avg_dist > right_avg_dist:
+            recommended = 'left'
+        else:
+            recommended = 'right'
+
+        return LidarSectorAnalysis(
+            front_min_distance=front_min_dist,
+            left_min_distance=left_min_dist,
+            right_min_distance=right_min_dist,
+            front_avg_distance=front_avg_dist,
+            left_avg_distance=left_avg_dist,
+            right_avg_distance=right_avg_dist,
+            recommended_direction=recommended,
+            obstacle_detected=obstacle_detected,
+            timestamp=time.time()
+        )
+
     def _navigation_loop(self, timeout_s: float):
         """
         Main navigation control loop.
 
-        Runs at configured rate (default 20 Hz).
-        Loop: Get Data -> Check Arrival -> Check Obstacles -> Navigate/Avoid -> Update
+        Loop: Get Data -> Check Arrival -> Check Obstacles -> Navigate/Avoid
         """
         loop_period = 1.0 / self.config.loop_rate_hz
 
@@ -264,7 +370,7 @@ class SmartNavigator:
             try:
                 # === STEP 1: GET SENSOR DATA ===
                 gps_pos = self.gps.get_position()
-                depth_analysis = self.camera.get_depth_analysis()
+                lidar_analysis = self._analyze_lidar_sectors()
 
                 # Update elapsed time
                 elapsed = time.time() - self._start_time
@@ -306,34 +412,32 @@ class SmartNavigator:
                         self._arrival_callback()
                     break
 
-                # === STEP 3: CHECK OBSTACLES (Depth Analysis) ===
+                # === STEP 3: CHECK OBSTACLES (LiDAR Analysis) ===
                 action = NavigationAction.NAVIGATING
                 speed = self.config.cruise_speed
                 steering = 0.0
 
-                if depth_analysis:
-                    center_dist = depth_analysis.center_min_distance
-                    left_dist = depth_analysis.left_avg_distance
-                    right_dist = depth_analysis.right_avg_distance
+                if lidar_analysis:
+                    front_dist = lidar_analysis.front_min_distance
+                    left_dist = lidar_analysis.left_avg_distance
+                    right_dist = lidar_analysis.right_avg_distance
 
                     # Critical obstacle in front - MUST avoid
-                    if center_dist < self.config.critical_distance_m:
+                    if front_dist < self.config.critical_distance_m:
                         speed = self.config.slow_speed
 
-                        # Decide left or right based on depth sectors
+                        # Decide left or right based on LiDAR sectors
                         if left_dist > right_dist:
-                            # More space on left - turn left
                             action = NavigationAction.AVOIDING_LEFT
                             steering = -self.config.avoidance_steering
                             print(f"[NAV] AVOIDING LEFT (L:{left_dist:.1f}m > R:{right_dist:.1f}m)")
                         else:
-                            # More space on right - turn right
                             action = NavigationAction.AVOIDING_RIGHT
                             steering = self.config.avoidance_steering
                             print(f"[NAV] AVOIDING RIGHT (R:{right_dist:.1f}m > L:{left_dist:.1f}m)")
 
                     # Warning distance - slow down and consider avoidance
-                    elif center_dist < self.config.warning_distance_m:
+                    elif front_dist < self.config.warning_distance_m:
                         speed = self.config.slow_speed
 
                         # Blend GPS steering with obstacle consideration
@@ -344,13 +448,11 @@ class SmartNavigator:
                             self.config.max_steering
                         )
 
-                        # Bias towards open space while still going towards target
+                        # Bias towards open space
                         if left_dist > right_dist + 0.5:
-                            # Bias left
                             steering = gps_steering - 0.2
                             action = NavigationAction.AVOIDING_LEFT
                         elif right_dist > left_dist + 0.5:
-                            # Bias right
                             steering = gps_steering + 0.2
                             action = NavigationAction.AVOIDING_RIGHT
                         else:
@@ -358,7 +460,6 @@ class SmartNavigator:
 
                 # === STEP 4: NORMAL GPS NAVIGATION ===
                 if action == NavigationAction.NAVIGATING:
-                    # Calculate steering based on heading error
                     heading_error = self._normalize_angle(bearing - self._estimated_heading)
 
                     steering = self._clamp(
@@ -372,9 +473,8 @@ class SmartNavigator:
                         speed = self.config.slow_speed
 
                 # === STEP 5: APPLY SAFETY CHECK ===
-                # Note: Emergency stop at 0.3m is handled by SafetyMonitor
                 if self.safety_monitor:
-                    obstacle_dist = depth_analysis.center_min_distance if depth_analysis else float('inf')
+                    obstacle_dist = lidar_analysis.front_min_distance if lidar_analysis else float('inf')
                     vesc_state = self.vesc.get_state()
                     speed = self.safety_monitor.check_and_limit(
                         requested_velocity=speed,
@@ -388,13 +488,13 @@ class SmartNavigator:
                 self.vesc.set_speed(speed)
                 self.vesc.set_steering(steering)
 
-                # === STEP 7: UPDATE STATUS FOR DASHBOARD ===
+                # === STEP 7: UPDATE STATUS ===
                 self._update_status(
                     action=action,
                     gps_pos=gps_pos,
                     distance=distance,
                     bearing=bearing,
-                    depth_analysis=depth_analysis,
+                    lidar_analysis=lidar_analysis,
                     speed=speed,
                     steering=steering
                 )
@@ -420,11 +520,11 @@ class SmartNavigator:
         gps_pos=None,
         distance: float = 0.0,
         bearing: float = 0.0,
-        depth_analysis=None,
+        lidar_analysis: Optional[LidarSectorAnalysis] = None,
         speed: float = 0.0,
         steering: float = 0.0
     ):
-        """Update navigation status for visualization."""
+        """Update navigation status."""
         with self._lock:
             self._status.action = action
             self._status.speed = speed
@@ -445,13 +545,12 @@ class SmartNavigator:
                 self._status.current_heading_deg = self._estimated_heading
                 self._status.heading_error_deg = self._normalize_angle(bearing - self._estimated_heading)
 
-            if depth_analysis:
-                self._status.obstacle_detected = depth_analysis.obstacle_detected
-                self._status.obstacle_distance_m = depth_analysis.center_min_distance
-                self._status.left_sector_distance_m = depth_analysis.left_avg_distance
-                self._status.right_sector_distance_m = depth_analysis.right_avg_distance
+            if lidar_analysis:
+                self._status.obstacle_detected = lidar_analysis.obstacle_detected
+                self._status.obstacle_distance_m = lidar_analysis.front_min_distance
+                self._status.left_sector_distance_m = lidar_analysis.left_avg_distance
+                self._status.right_sector_distance_m = lidar_analysis.right_avg_distance
 
-        # Call status callback if set
         if self._status_callback:
             self._status_callback(self._status)
 
@@ -475,12 +574,7 @@ class SmartNavigator:
         lat1: float, lon1: float,
         lat2: float, lon2: float
     ) -> float:
-        """
-        Calculate distance between two GPS coordinates using Haversine formula.
-
-        Returns:
-            Distance in meters
-        """
+        """Calculate distance between two GPS coordinates (Haversine)."""
         lat1_rad = math.radians(lat1)
         lat2_rad = math.radians(lat2)
         delta_lat = math.radians(lat2 - lat1)
@@ -498,12 +592,7 @@ class SmartNavigator:
         lat1: float, lon1: float,
         lat2: float, lon2: float
     ) -> float:
-        """
-        Calculate bearing from point 1 to point 2.
-
-        Returns:
-            Bearing in degrees (0-360, where 0=North, 90=East)
-        """
+        """Calculate bearing from point 1 to point 2 (degrees, 0=North)."""
         lat1_rad = math.radians(lat1)
         lat2_rad = math.radians(lat2)
         delta_lon = math.radians(lon2 - lon1)
@@ -516,13 +605,8 @@ class SmartNavigator:
         return (bearing + 360) % 360
 
     def _update_heading_estimate(self, lat: float, lon: float):
-        """
-        Estimate current heading from GPS movement.
-
-        Uses position change between samples to estimate heading.
-        """
+        """Estimate current heading from GPS movement."""
         if self._prev_lat != 0.0 and self._prev_lon != 0.0:
-            # Only update if moved significantly (reduces noise)
             dist = self._calculate_distance(
                 self._prev_lat, self._prev_lon,
                 lat, lon
@@ -565,19 +649,9 @@ def gps_to_local(
     lat: float, lon: float,
     origin_lat: float, origin_lon: float
 ) -> Tuple[float, float]:
-    """
-    Convert GPS coordinates to local X/Y (meters).
-
-    Args:
-        lat, lon: Target coordinates
-        origin_lat, origin_lon: Reference origin
-
-    Returns:
-        Tuple of (x, y) in meters
-    """
+    """Convert GPS to local X/Y (meters)."""
     EARTH_RADIUS = 6371000.0
 
-    # Approximate conversion (good for small distances)
     lat_diff = math.radians(lat - origin_lat)
     lon_diff = math.radians(lon - origin_lon)
     avg_lat = math.radians((lat + origin_lat) / 2)
@@ -592,16 +666,7 @@ def local_to_gps(
     x: float, y: float,
     origin_lat: float, origin_lon: float
 ) -> Tuple[float, float]:
-    """
-    Convert local X/Y (meters) to GPS coordinates.
-
-    Args:
-        x, y: Local coordinates in meters
-        origin_lat, origin_lon: Reference origin
-
-    Returns:
-        Tuple of (latitude, longitude)
-    """
+    """Convert local X/Y (meters) to GPS."""
     EARTH_RADIUS = 6371000.0
 
     lat_diff = y / EARTH_RADIUS
@@ -611,10 +676,3 @@ def local_to_gps(
     lon = origin_lon + math.degrees(lon_diff)
 
     return lat, lon
-
-
-# Test code
-if __name__ == '__main__':
-    print("[NAV] Smart Navigation module loaded")
-    print("[NAV] This module requires VESC, GPS, and Camera drivers to be initialized")
-    print("[NAV] See start_navigation() for usage")

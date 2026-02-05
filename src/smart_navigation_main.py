@@ -2,26 +2,15 @@
 """
 Smart Navigation Main Script for Robocar
 
-This script demonstrates the complete autonomous navigation system with:
-- OAK-D Lite camera for obstacle detection
-- GPS RTK for positioning
-- VESC motor control
-- Flask web dashboard for monitoring
+Navigation from Point A to Point B using GPS + LiDAR (no camera).
+
+Uses:
+- GPS RTK for positioning and target navigation
+- LiDAR LD19 for obstacle detection and avoidance
+- VESC for motor control
 
 Usage:
-    # On Jetson Nano:
     python3 smart_navigation_main.py --target-lat 48.8157 --target-lon 2.3632
-
-    # Then open browser on PC:
-    http://<jetson-ip>:5000
-
-Requirements:
-    - depthai (OAK-D camera)
-    - flask (web dashboard)
-    - opencv-python
-    - numpy
-    - pyserial
-    - pyvesc
 """
 
 import sys
@@ -36,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Import drivers
 from driver.vesc_motor import VESCController
 from driver.gps_rtk import GPSRTKDriver, load_polaris_config
-from driver.oak_d_camera import OakDCamera, CameraConfig
+from driver.lidar import LidarDriver
 
 # Import navigation
 from navigation.smart_navigation import SmartNavigator, NavigationConfig
@@ -44,14 +33,11 @@ from navigation.smart_navigation import SmartNavigator, NavigationConfig
 # Import safety
 from core.safety import SafetyMonitor, SafetyConfig
 
-# Import visualization
-from visualization.web_dashboard import WebDashboard
-
 
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description='Robocar Smart Navigation',
+        description='Robocar GPS Navigation (Point A to B)',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 
@@ -66,6 +52,8 @@ def parse_args():
                        help='VESC serial port')
     parser.add_argument('--gps-port', type=str, default='/dev/ttyUSB0',
                        help='GPS serial port')
+    parser.add_argument('--lidar-port', type=str, default='/dev/ttyUSB1',
+                       help='LiDAR serial port')
 
     # Configuration
     parser.add_argument('--arrival-radius', type=float, default=1.0,
@@ -75,12 +63,6 @@ def parse_args():
     parser.add_argument('--timeout', type=float, default=300.0,
                        help='Navigation timeout in seconds')
 
-    # Dashboard
-    parser.add_argument('--dashboard-port', type=int, default=5000,
-                       help='Web dashboard port')
-    parser.add_argument('--no-dashboard', action='store_true',
-                       help='Disable web dashboard')
-
     # Polaris RTK
     parser.add_argument('--polaris-key', type=str, default=None,
                        help='Polaris API key for RTK corrections')
@@ -89,8 +71,6 @@ def parse_args():
                        help='Path to GPS config file with Polaris key')
 
     # Debug
-    parser.add_argument('--simulate', action='store_true',
-                       help='Run in simulation mode (no hardware)')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Verbose output')
 
@@ -101,13 +81,7 @@ class RobocarNavigator:
     """
     Main Robocar navigation application.
 
-    Integrates all components:
-    - VESC motor controller
-    - GPS RTK driver
-    - OAK-D camera
-    - Safety monitor
-    - Smart navigator
-    - Web dashboard
+    Uses GPS + LiDAR for navigation from point A to point B.
     """
 
     def __init__(self, args):
@@ -115,41 +89,35 @@ class RobocarNavigator:
         self.args = args
         self.running = False
 
-        # Components (initialized in start())
+        # Components
         self.vesc = None
         self.gps = None
-        self.camera = None
+        self.lidar = None
         self.safety = None
         self.navigator = None
-        self.dashboard = None
 
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
     def start(self) -> bool:
-        """
-        Start all components.
-
-        Returns:
-            True if all components started successfully
-        """
+        """Start all components."""
         print("=" * 60)
-        print("       ROBOCAR SMART NAVIGATION SYSTEM")
+        print("       ROBOCAR GPS NAVIGATION")
+        print("       (Point A to Point B)")
         print("=" * 60)
         print()
 
         # === 1. VESC Motor Controller ===
-        print("[1/6] Initializing VESC motor controller...")
+        print("[1/5] Initializing VESC motor controller...")
         self.vesc = VESCController(port=self.args.vesc_port)
-        if not self.args.simulate:
-            if not self.vesc.start():
-                print("[ERROR] Failed to start VESC controller")
-                return False
+        if not self.vesc.start():
+            print("[ERROR] Failed to start VESC controller")
+            return False
         print(f"      VESC connected on {self.args.vesc_port}")
 
         # === 2. GPS RTK Driver ===
-        print("[2/6] Initializing GPS RTK driver...")
+        print("[2/5] Initializing GPS RTK driver...")
 
         # Load Polaris API key
         polaris_key = self.args.polaris_key
@@ -161,38 +129,30 @@ class RobocarNavigator:
             polaris_api_key=polaris_key
         )
 
-        if not self.args.simulate:
-            if not self.gps.start(auto_detect=True):
-                print("[ERROR] Failed to start GPS driver")
-                self._cleanup()
-                return False
+        if not self.gps.start(auto_detect=True):
+            print("[ERROR] Failed to start GPS driver")
+            self._cleanup()
+            return False
 
-            # Wait for GPS fix
-            print("      Waiting for GPS fix...")
-            if not self.gps.wait_for_fix(timeout=30.0):
-                print("[WARNING] No GPS fix after 30s, continuing anyway...")
-            else:
-                pos = self.gps.get_position()
-                print(f"      GPS fix: {pos.quality_string} "
-                      f"({pos.latitude:.6f}, {pos.longitude:.6f})")
-
-        # === 3. OAK-D Camera ===
-        print("[3/6] Initializing OAK-D Lite camera...")
-        camera_config = CameraConfig(
-            fps=30,
-            warning_distance_m=1.5,
-            critical_distance_m=0.5
-        )
-        self.camera = OakDCamera(config=camera_config)
-
-        if not self.camera.start():
-            print("[WARNING] OAK-D camera not available, using simulation")
+        # Wait for GPS fix
+        print("      Waiting for GPS fix...")
+        if not self.gps.wait_for_fix(timeout=30.0):
+            print("[WARNING] No GPS fix after 30s, continuing anyway...")
         else:
-            print(f"      Camera: RGB {self.camera.rgb_width}x{self.camera.rgb_height}, "
-                  f"Depth {self.camera.depth_width}x{self.camera.depth_height}")
+            pos = self.gps.get_position()
+            print(f"      GPS fix: {pos.quality_string} "
+                  f"({pos.latitude:.6f}, {pos.longitude:.6f})")
+
+        # === 3. LiDAR Driver ===
+        print("[3/5] Initializing LiDAR LD19...")
+        self.lidar = LidarDriver(port=self.args.lidar_port)
+        if not self.lidar.start():
+            print("[WARNING] LiDAR not available - obstacle avoidance disabled")
+        else:
+            print(f"      LiDAR connected on {self.args.lidar_port}")
 
         # === 4. Safety Monitor ===
-        print("[4/6] Initializing safety monitor...")
+        print("[4/5] Initializing safety monitor...")
         safety_config = SafetyConfig(
             emergency_stop_distance=0.15,   # 15cm hard stop
             critical_distance=0.3,          # 30cm stop
@@ -207,7 +167,7 @@ class RobocarNavigator:
         print("      Safety monitor active (emergency stop at 30cm)")
 
         # === 5. Smart Navigator ===
-        print("[5/6] Initializing smart navigator...")
+        print("[5/5] Initializing GPS navigator...")
         nav_config = NavigationConfig(
             arrival_radius_m=self.args.arrival_radius,
             cruise_speed=self.args.cruise_speed,
@@ -217,27 +177,13 @@ class RobocarNavigator:
         self.navigator = SmartNavigator(
             vesc=self.vesc,
             gps=self.gps,
-            camera=self.camera,
+            lidar=self.lidar,
             config=nav_config,
             safety_monitor=self.safety
         )
         self.navigator.set_arrival_callback(self._on_arrival)
         print(f"      Target: ({self.args.target_lat:.6f}, {self.args.target_lon:.6f})")
         print(f"      Arrival radius: {self.args.arrival_radius}m")
-
-        # === 6. Web Dashboard ===
-        if not self.args.no_dashboard:
-            print("[6/6] Starting web dashboard...")
-            self.dashboard = WebDashboard(
-                camera=self.camera,
-                navigator=self.navigator
-            )
-            if self.dashboard.start(port=self.args.dashboard_port):
-                print(f"      Dashboard: http://0.0.0.0:{self.args.dashboard_port}")
-            else:
-                print("[WARNING] Failed to start dashboard")
-        else:
-            print("[6/6] Web dashboard disabled")
 
         print()
         print("=" * 60)
@@ -249,12 +195,7 @@ class RobocarNavigator:
         return True
 
     def navigate(self) -> bool:
-        """
-        Start navigation to target.
-
-        Returns:
-            True if arrived successfully
-        """
+        """Start navigation to target."""
         if not self.running:
             print("[ERROR] System not started")
             return False
@@ -281,14 +222,11 @@ class RobocarNavigator:
         if self.navigator:
             self.navigator.stop_navigation()
 
-        if self.dashboard:
-            self.dashboard.stop()
-
         if self.safety:
             self.safety.stop_watchdog()
 
-        if self.camera:
-            self.camera.stop()
+        if self.lidar:
+            self.lidar.stop()
 
         if self.gps:
             self.gps.stop()
@@ -304,6 +242,8 @@ class RobocarNavigator:
             self.vesc.stop()
         if self.gps:
             self.gps.stop()
+        if self.lidar:
+            self.lidar.stop()
 
     def _emergency_stop(self):
         """Emergency stop callback."""
@@ -312,7 +252,7 @@ class RobocarNavigator:
         print("!" * 60)
 
         if self.vesc:
-            self.vesc.brake(25.0)  # Strong brake
+            self.vesc.brake(25.0)
             self.vesc.set_speed(0)
 
     def _on_arrival(self):
@@ -333,14 +273,12 @@ def main():
     args = parse_args()
 
     print()
-    print("ROBOCAR Smart Navigation")
+    print("ROBOCAR GPS Navigation")
     print("-" * 40)
     print(f"Target:    ({args.target_lat:.6f}, {args.target_lon:.6f})")
     print(f"Arrival:   {args.arrival_radius}m radius")
     print(f"Speed:     {args.cruise_speed}")
     print(f"Timeout:   {args.timeout}s")
-    print(f"Dashboard: {'Disabled' if args.no_dashboard else f'Port {args.dashboard_port}'}")
-    print(f"Simulate:  {'Yes' if args.simulate else 'No'}")
     print("-" * 40)
     print()
 
@@ -351,6 +289,7 @@ def main():
         print("[FATAL] Failed to initialize system")
         sys.exit(1)
 
+    success = False
     try:
         # Run navigation
         success = robocar.navigate()
