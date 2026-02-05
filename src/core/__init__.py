@@ -6,5 +6,5 @@ Core infrastructure module.
 - Safety systems
 """
 
-from .state_machine import StateMachine, RobotState, RobotEvent
+from .state_machine import StateMachine, RobotState, StateEvent
 from .safety import SafetyMonitor, SafetyConfig, SafetyStatus
