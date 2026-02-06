@@ -101,11 +101,14 @@ class NavigationController:
     """
 
     # Configuration
-    WAYPOINT_REACHED_DIST = 0.5      # Distance pour considerer waypoint atteint (m)
+    WAYPOINT_REACHED_DIST = 0.5      # Distance pour considerer waypoint intermediaire atteint (m)
+    ARRIVAL_DISTANCE = 2.0            # Distance pour considerer destination finale atteinte (m)
     MAX_SPEED = 0.5                   # Vitesse max normalisee
     MIN_SPEED = 0.1                   # Vitesse min normalisee
-    OBSTACLE_STOP_DIST = 0.3          # Distance arret obstacle (m) - EMERGENCY STOP
-    OBSTACLE_SLOW_DIST = 1.0          # Distance ralentissement (m)
+    AVOIDANCE_MIN_SPEED = 0.15        # Vitesse min pendant evitement (garde la manoeuvrabilite)
+    OBSTACLE_EMERGENCY_DIST = 0.15    # Distance arret d'urgence absolu (m) - collision imminente
+    OBSTACLE_STOP_DIST = 0.3          # Distance anciennement "stop", maintenant evitement actif (m)
+    OBSTACLE_SLOW_DIST = 1.0          # Distance ralentissement + evitement modere (m)
     OBSTACLE_WARN_DIST = 2.0          # Distance avertissement (m)
     STEERING_GAIN = 2.0               # Gain de direction
     LOOP_RATE = 20                    # Hz
@@ -224,10 +227,21 @@ class NavigationController:
             if 'navigation' in config:
                 nav = config['navigation']
                 self.WAYPOINT_REACHED_DIST = nav.get('waypoint_reached_distance', self.WAYPOINT_REACHED_DIST)
+                self.ARRIVAL_DISTANCE = nav.get('arrival_distance', self.ARRIVAL_DISTANCE)
                 self.MAX_SPEED = nav.get('max_speed', self.MAX_SPEED)
                 self.MIN_SPEED = nav.get('min_speed', self.MIN_SPEED)
+                self.AVOIDANCE_MIN_SPEED = nav.get('avoidance_min_speed', self.AVOIDANCE_MIN_SPEED)
                 self.STEERING_GAIN = nav.get('steering_gain', self.STEERING_GAIN)
                 self.LOOP_RATE = nav.get('loop_rate', self.LOOP_RATE)
+
+            # Charger les parametres d'evitement d'obstacles
+            if 'avoidance' in config:
+                avoid = config['avoidance']
+                self.OBSTACLE_EMERGENCY_DIST = avoid.get('emergency_distance', self.OBSTACLE_EMERGENCY_DIST)
+                self.OBSTACLE_SLOW_DIST = avoid.get('active_distance', self.OBSTACLE_SLOW_DIST)
+                self.OBSTACLE_WARN_DIST = avoid.get('warning_distance', self.OBSTACLE_WARN_DIST)
+                print(f"[NAV] Config evitement: urgence={self.OBSTACLE_EMERGENCY_DIST}m, "
+                      f"actif={self.OBSTACLE_SLOW_DIST}m, vigilance={self.OBSTACLE_WARN_DIST}m")
 
             # Charger les parametres de perception
             if 'perception' in config:
@@ -480,14 +494,15 @@ class NavigationController:
             right_score = min_dist_front_right + min_dist_right * 0.5
 
             # Tourner vers le cote le plus libre
+            # Plage etendue: 0.3 (loin) a 1.0 (tres proche) pour evitement dynamique
+            avoidance_strength = 1.0 - (effective_front_dist / self.OBSTACLE_WARN_DIST)
+            avoidance_strength = max(0.0, min(1.0, avoidance_strength))
+            steer_magnitude = 0.3 + 0.7 * avoidance_strength  # 0.3 a 1.0
+
             if left_score > right_score:
-                # Plus de place a gauche
-                avoidance_strength = 1.0 - (effective_front_dist / self.OBSTACLE_WARN_DIST)
-                steering = 0.3 + 0.5 * avoidance_strength  # 0.3 a 0.8
+                steering = steer_magnitude
             else:
-                # Plus de place a droite
-                avoidance_strength = 1.0 - (effective_front_dist / self.OBSTACLE_WARN_DIST)
-                steering = -(0.3 + 0.5 * avoidance_strength)  # -0.3 a -0.8
+                steering = -steer_magnitude
 
         # === ETAPE 6: Determiner si danger imminent ===
         danger_imminent = (
@@ -597,7 +612,17 @@ class NavigationController:
         """
         Execute une iteration de navigation.
 
-        Logique amelioree avec evitement reactif et securite renforcee.
+        Logique de priorite:
+        1. ARRIVEE   - Arret si destination finale atteinte (< ARRIVAL_DISTANCE)
+        2. URGENCE   - Arret si collision imminente (< OBSTACLE_EMERGENCY_DIST)
+        3. EVITEMENT - Ralentir + contourner obstacle (Potential Field reactif)
+        4. NAVIGATION - Suivi waypoint GPS (controle proportionnel)
+
+        L'evitement est TOUJOURS prioritaire sur la navigation:
+        - Zone urgence (<15cm): arret complet + braquage vers zone libre
+        - Zone evitement (15cm-1m): vitesse reduite + braquage fort vers zone libre
+        - Zone vigilance (1m-2m): ralentissement progressif + correction legere
+        - Zone libre (>2m): navigation pure vers waypoint
 
         Returns:
             True si navigation en cours, False si terminee
@@ -609,63 +634,112 @@ class NavigationController:
         wp = self.waypoints[self.current_waypoint_idx]
         distance = self.distance_to_waypoint(wp)
 
-        # Verifier si waypoint atteint
-        if distance < self.WAYPOINT_REACHED_DIST:
+        # === ETAPE 1: VERIFICATION ARRIVEE ===
+        is_final_waypoint = (self.current_waypoint_idx == len(self.waypoints) - 1)
+        reach_dist = self.ARRIVAL_DISTANCE if is_final_waypoint else self.WAYPOINT_REACHED_DIST
+
+        if distance < reach_dist:
             wp.reached = True
             self.current_waypoint_idx += 1
-            print(f"[NAV] Waypoint {self.current_waypoint_idx} atteint!")
 
-            if self.current_waypoint_idx >= len(self.waypoints):
-                print("[NAV] Destination finale atteinte!")
-                self.motor.emergency_stop()
+            if is_final_waypoint or self.current_waypoint_idx >= len(self.waypoints):
+                # Destination finale atteinte - arret complet
+                self.motor.set_speed(0)
+                self.motor.set_steering(0)
+                print(f"\n\n{'=' * 50}")
+                print(f"         >>> ARRIVÉ <<<")
+                print(f"{'=' * 50}")
+                print(f"  Distance finale : {distance:.2f}m")
+                print(f"  GPS : ({self.state.latitude:.6f}, {self.state.longitude:.6f})")
+                print(f"  Seuil d'arrivee : {self.ARRIVAL_DISTANCE:.1f}m")
+                print(f"{'=' * 50}\n")
                 return False
+
+            print(f"[NAV] Waypoint {self.current_waypoint_idx} atteint! "
+                  f"(dist={distance:.2f}m)")
             return True
 
-        # === PERCEPTION: Verifier obstacles ===
+        # === ETAPE 2: PERCEPTION - Verifier obstacles ===
         danger_imminent, obs_dist, avoid_steering = self.check_obstacles()
 
-        # === SECURITE: Arret d'urgence si danger imminent ===
-        if danger_imminent:
-            self.motor.set_speed(0)
-            # Continuer a tourner pour eviter l'obstacle
-            if abs(avoid_steering) > 0.1:
-                self.motor.set_steering(avoid_steering)
-            else:
-                # Si pas de direction claire, reculer un peu en tournant
-                self.motor.set_steering(0.5 if avoid_steering >= 0 else -0.5)
-            return True
-
-        # === NAVIGATION: Calculer commandes vers waypoint ===
+        # === ETAPE 3: NAVIGATION - Toujours calculer le cap waypoint ===
+        # (sert de direction de "recovery" apres evitement)
         nav_speed, nav_steering = self.compute_control(wp)
 
-        # === FUSION: Combiner navigation et evitement ===
+        # === ETAPE 4: FUSION EVITEMENT / NAVIGATION (Potential Field) ===
+        # L'evitement est prioritaire: plus l'obstacle est proche,
+        # plus le "champ repulsif" domine sur le "champ attractif" du waypoint.
         final_speed = nav_speed
         final_steering = nav_steering
 
-        if obs_dist < self.OBSTACLE_WARN_DIST:
-            # Zone de vigilance - adapter vitesse et direction
+        if obs_dist < self.OBSTACLE_EMERGENCY_DIST:
+            # -------------------------------------------------------
+            # ZONE URGENCE (< 15cm) - Collision imminente
+            # Arret complet + braquage maximal vers la zone libre
+            # -------------------------------------------------------
+            self.motor.set_speed(0)
+            if abs(avoid_steering) > 0.1:
+                self.motor.set_steering(avoid_steering)
+            else:
+                self.motor.set_steering(0.8 if avoid_steering >= 0 else -0.8)
 
-            # Facteur de ralentissement progressif
-            slowdown = (obs_dist - self.OBSTACLE_STOP_DIST) / (self.OBSTACLE_WARN_DIST - self.OBSTACLE_STOP_DIST)
-            slowdown = max(0.2, min(1.0, slowdown))  # Entre 20% et 100%
+            if self.mode == 'car':
+                print(f"\n[AVOID] URGENCE! obs={obs_dist:.2f}m - ARRET + braquage")
+            return True
 
-            # Appliquer ralentissement
-            final_speed = nav_speed * slowdown
+        elif obs_dist < self.OBSTACLE_SLOW_DIST:
+            # -------------------------------------------------------
+            # ZONE EVITEMENT ACTIF (15cm - 1.0m)
+            # Ralentir fortement + braquer vers la zone libre
+            # La voiture CONTINUE d'avancer pour contourner l'obstacle
+            # -------------------------------------------------------
+            # Interpolation lineaire: 0.0 (a 15cm) -> 1.0 (a 1.0m)
+            t = (obs_dist - self.OBSTACLE_EMERGENCY_DIST) / \
+                (self.OBSTACLE_SLOW_DIST - self.OBSTACLE_EMERGENCY_DIST)
+            t = max(0.0, min(1.0, t))
 
-            # Mixer evitement et navigation
-            if obs_dist < self.OBSTACLE_SLOW_DIST:
-                # Plus proche = plus d'evitement
-                avoidance_weight = 1.0 - (obs_dist / self.OBSTACLE_SLOW_DIST)
-                avoidance_weight = max(0.0, min(0.8, avoidance_weight))
+            # Vitesse: reduite mais non nulle pour garder la manoeuvrabilite
+            # A 15cm: AVOIDANCE_MIN_SPEED, a 1.0m: MIN_SPEED
+            final_speed = self.AVOIDANCE_MIN_SPEED + \
+                (self.MIN_SPEED - self.AVOIDANCE_MIN_SPEED) * t
 
-                # Combiner les deux directions
-                final_steering = (1 - avoidance_weight) * nav_steering + avoidance_weight * avoid_steering
+            # Direction: forte dominance de l'evitement (champ repulsif)
+            # A 15cm: 100% evitement, a 1.0m: 50% evitement + 50% navigation
+            avoidance_weight = 1.0 - (t * 0.5)  # 1.0 -> 0.5
+            final_steering = avoidance_weight * avoid_steering + \
+                (1.0 - avoidance_weight) * nav_steering
+
+            if self.mode == 'car':
+                print(f"\n[AVOID] Contournement: obs={obs_dist:.2f}m "
+                      f"v={final_speed:.2f} steer={final_steering:.2f}")
+
+        elif obs_dist < self.OBSTACLE_WARN_DIST:
+            # -------------------------------------------------------
+            # ZONE VIGILANCE (1.0m - 2.0m)
+            # Ralentissement progressif + correction legere de cap
+            # Le waypoint reste dominant dans la direction
+            # -------------------------------------------------------
+            # Interpolation: 0.0 (a 1.0m) -> 1.0 (a 2.0m)
+            t = (obs_dist - self.OBSTACLE_SLOW_DIST) / \
+                (self.OBSTACLE_WARN_DIST - self.OBSTACLE_SLOW_DIST)
+            t = max(0.0, min(1.0, t))
+
+            # Vitesse: ralentissement progressif (50% a 100% de nav_speed)
+            slowdown_factor = 0.5 + 0.5 * t
+            final_speed = nav_speed * slowdown_factor
+
+            # Direction: legere correction d'evitement (30% a 0%)
+            avoidance_weight = 0.3 * (1.0 - t)
+            final_steering = (1.0 - avoidance_weight) * nav_steering + \
+                avoidance_weight * avoid_steering
+
+        # else: ZONE LIBRE (> 2.0m) - navigation pure vers waypoint
 
         # Limiter les valeurs
         final_speed = max(self.MIN_SPEED, min(self.MAX_SPEED, final_speed))
         final_steering = max(-1.0, min(1.0, final_steering))
 
-        # === APPLIQUER COMMANDES ===
+        # === ETAPE 5: APPLIQUER COMMANDES MOTEUR ===
         self.motor.set_speed(final_speed)
         self.motor.set_steering(final_steering)
 

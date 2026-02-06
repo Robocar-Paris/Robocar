@@ -172,7 +172,9 @@ class RealMotorAdapter(IMotorController):
 
     def set_speed(self, speed: float):
         if self._controller:
-            duty = max(-1.0, min(1.0, speed)) * -0.15
+            # Positive speed = forward, negative = reverse
+            # The duty cycle sign must match: positive duty = forward on VESC
+            duty = max(-1.0, min(1.0, speed)) * 0.15
             self._controller.set_duty_cycle(duty)
 
     def set_steering(self, steering: float):

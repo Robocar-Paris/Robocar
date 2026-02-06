@@ -375,6 +375,10 @@ class NavigationLauncher:
         # Creer controleur
         self.controller = NavigationController(lidar, gps, motor, mode='car')
 
+        # Configurer la distance d'arrivee
+        if hasattr(self.args, 'arrival_distance') and self.args.arrival_distance:
+            self.controller.ARRIVAL_DISTANCE = self.args.arrival_distance
+
         # Ajouter waypoints GPS
         for lat, lon in self.waypoints:
             self.controller.add_waypoint_gps(lat, lon)
@@ -384,6 +388,7 @@ class NavigationLauncher:
         print(f"Destination(s):")
         for i, (lat, lon) in enumerate(self.waypoints, 1):
             print(f"  {i}. ({lat:.6f}, {lon:.6f})")
+        print(f"Seuil d'arrivee: {self.controller.ARRIVAL_DISTANCE:.1f}m")
 
         if self.args.polaris_key:
             log_ok("RTK Polaris active")
@@ -548,6 +553,12 @@ Exemples:
         type=float,
         default=0.5,
         help='Vitesse maximale (0.0-1.0, defaut: 0.5)'
+    )
+    opt_group.add_argument(
+        '--arrival-distance',
+        type=float,
+        default=2.0,
+        help='Distance d\'arrivee pour la destination finale en metres (defaut: 2.0)'
     )
     opt_group.add_argument(
         '--verbose', '-v',

@@ -81,8 +81,17 @@ perception:
 
 # Navigation parameters
 navigation:
-  waypoint_reached_distance: 0.5  # meters
+  waypoint_reached_distance: 0.5  # meters - waypoints intermediaires
+  arrival_distance: 2.0           # meters - seuil destination finale (>>> ARRIVÉ <<<)
   max_speed: 0.5                   # normalized [0-1]
   min_speed: 0.1                   # normalized [0-1]
+  avoidance_min_speed: 0.15        # normalized - vitesse min pendant evitement actif
   steering_gain: 2.0               # proportional gain
   loop_rate: 20                    # Hz
+
+# Obstacle avoidance parameters (Potential Field reactif)
+# Priorite: urgence > evitement > vigilance > navigation
+avoidance:
+  emergency_distance: 0.15         # meters - arret complet (collision imminente)
+  active_distance: 1.0             # meters - evitement actif (ralentir + contourner)
+  warning_distance: 2.0            # meters - vigilance (ralentissement progressif)
