@@ -65,6 +65,38 @@ class Waypoint:
 
 
 @dataclass
+class ObstacleState:
+    """Etat detaille des obstacles par zone."""
+    # Distances minimales par zone
+    front: float = float('inf')
+    front_left: float = float('inf')
+    front_right: float = float('inf')
+    left: float = float('inf')
+    right: float = float('inf')
+
+    # Direction d'evitement suggeree (-1 = droite, +1 = gauche)
+    avoid_steering: float = 0.0
+
+    # Etats de blocage
+    front_blocked: bool = False       # Obstacle devant
+    completely_blocked: bool = False   # Bloque de partout, nulle part ou aller
+
+    @property
+    def best_escape_direction(self) -> float:
+        """Retourne la meilleure direction d'echappement."""
+        # Score pour chaque cote : plus c'est grand, plus c'est libre
+        left_score = self.front_left + self.left * 0.5
+        right_score = self.front_right + self.right * 0.5
+
+        if left_score > right_score:
+            return 1.0   # Tourner a gauche
+        elif right_score > left_score:
+            return -1.0  # Tourner a droite
+        else:
+            return 1.0   # Par defaut, gauche
+
+
+@dataclass
 class NavigationState:
     """Etat de la navigation."""
     # Position actuelle
@@ -372,21 +404,29 @@ class NavigationController:
             scan_frequency=scan.scan_frequency
         )
 
-    def check_obstacles(self) -> Tuple[bool, float, float]:
+    def check_obstacles(self) -> ObstacleState:
         """
         Verifie les obstacles via LiDAR avec perception avancee.
 
         Utilise LidarProcessor pour filtrer les donnees et
         ObstacleDetector pour detecter et classifier les obstacles.
 
-        Returns:
-            (danger_imminent, min_distance_front, suggested_steering)
+        Retourne un ObstacleState detaille avec:
+        - Distance minimale par zone (front, front_left, front_right, left, right)
+        - front_blocked: obstacle devant necessitant un contournement
+        - completely_blocked: murs partout, impossible d'avancer
+        - avoid_steering: direction d'evitement suggeree
         """
+        obs_state = ObstacleState()
+
         scan = self.lidar.get_scan()
         if not scan or len(scan.points) == 0:
-            # Pas de donnees LiDAR - DANGER, on arrete!
+            # Pas de donnees LiDAR - securite, on signale bloque
             print("[PERCEPTION] Pas de donnees LiDAR!")
-            return True, 0.0, 0.0
+            obs_state.completely_blocked = True
+            obs_state.front_blocked = True
+            obs_state.front = 0.0
+            return obs_state
 
         # Reinitialiser les points pour visualisation
         self.scan_points = []
@@ -398,7 +438,10 @@ class NavigationController:
             self.last_processed_scan = processed
         except Exception as e:
             print(f"[PERCEPTION] Erreur traitement scan: {e}")
-            return True, 0.0, 0.0
+            obs_state.completely_blocked = True
+            obs_state.front_blocked = True
+            obs_state.front = 0.0
+            return obs_state
 
         # === ETAPE 2: Detecter les obstacles ===
         try:
@@ -408,17 +451,9 @@ class NavigationController:
             self.detected_obstacles = []
 
         # === ETAPE 3: Calculer les distances par zone ===
-        # Utiliser les points valides du scan traite
         valid_mask = processed.valid_mask
         angles = processed.angles
         distances = processed.distances
-        points = processed.points
-
-        min_dist_front = float('inf')
-        min_dist_front_left = float('inf')
-        min_dist_front_right = float('inf')
-        min_dist_left = float('inf')
-        min_dist_right = float('inf')
 
         for i in range(len(angles)):
             if not valid_mask[i]:
@@ -435,78 +470,68 @@ class NavigationController:
 
             # Classifier dans les zones
             if self._is_angle_in_zone(angle_normalized, self.FRONT_ZONE):
-                if distances[i] < min_dist_front:
-                    min_dist_front = distances[i]
+                obs_state.front = min(obs_state.front, distances[i])
 
             if self._is_angle_in_zone(angle_normalized, self.FRONT_LEFT_ZONE):
-                if distances[i] < min_dist_front_left:
-                    min_dist_front_left = distances[i]
+                obs_state.front_left = min(obs_state.front_left, distances[i])
 
             if self._is_angle_in_zone(angle_normalized, self.FRONT_RIGHT_ZONE):
-                if distances[i] < min_dist_front_right:
-                    min_dist_front_right = distances[i]
+                obs_state.front_right = min(obs_state.front_right, distances[i])
 
             if self._is_angle_in_zone(angle_normalized, self.LEFT_ZONE):
-                if distances[i] < min_dist_left:
-                    min_dist_left = distances[i]
+                obs_state.left = min(obs_state.left, distances[i])
 
             if self._is_angle_in_zone(angle_normalized, self.RIGHT_ZONE):
-                if distances[i] < min_dist_right:
-                    min_dist_right = distances[i]
+                obs_state.right = min(obs_state.right, distances[i])
 
-        # === ETAPE 4: Verifier les obstacles detectes ===
-        danger_from_obstacles = False
-        nearest_obstacle_dist = float('inf')
-
-        for obs in self.detected_obstacles:
-            if obs.min_distance < self.OBSTACLE_STOP_DIST:
-                danger_from_obstacles = True
-            if obs.min_distance < nearest_obstacle_dist:
-                nearest_obstacle_dist = obs.min_distance
-
-        # === ETAPE 5: Determiner la direction d'evitement ===
-        steering = 0.0
-
-        # Distance effective devant (prend en compte aussi les cotes)
+        # === ETAPE 4: Determiner si le front est bloque ===
+        # Le front est bloque si un obstacle est dans la zone de ralentissement
         effective_front_dist = min(
-            min_dist_front,
-            min_dist_front_left * 0.8,  # Pondere les cotes
-            min_dist_front_right * 0.8
+            obs_state.front,
+            obs_state.front_left * 0.8,
+            obs_state.front_right * 0.8
         )
 
-        if effective_front_dist < self.OBSTACLE_WARN_DIST:
-            # Calculer un score pour chaque direction
-            left_score = min_dist_front_left + min_dist_left * 0.5
-            right_score = min_dist_front_right + min_dist_right * 0.5
+        obs_state.front_blocked = effective_front_dist < self.OBSTACLE_SLOW_DIST
 
-            # Tourner vers le cote le plus libre
+        # === ETAPE 5: Determiner si completement bloque ===
+        # On est bloque partout si TOUTES les directions proches sont sous le seuil d'arret
+        blocked_threshold = self.OBSTACLE_STOP_DIST
+        all_blocked = (
+            obs_state.front < blocked_threshold and
+            obs_state.front_left < blocked_threshold and
+            obs_state.front_right < blocked_threshold and
+            obs_state.left < blocked_threshold * 1.5 and
+            obs_state.right < blocked_threshold * 1.5
+        )
+        obs_state.completely_blocked = all_blocked
+
+        # === ETAPE 6: Calculer la direction d'evitement ===
+        if obs_state.front_blocked:
+            left_score = obs_state.front_left + obs_state.left * 0.5
+            right_score = obs_state.front_right + obs_state.right * 0.5
+
+            avoidance_strength = max(0.0, 1.0 - (effective_front_dist / self.OBSTACLE_SLOW_DIST))
+
             if left_score > right_score:
-                # Plus de place a gauche
-                avoidance_strength = 1.0 - (effective_front_dist / self.OBSTACLE_WARN_DIST)
-                steering = 0.3 + 0.5 * avoidance_strength  # 0.3 a 0.8
+                obs_state.avoid_steering = 0.3 + 0.7 * avoidance_strength
             else:
-                # Plus de place a droite
-                avoidance_strength = 1.0 - (effective_front_dist / self.OBSTACLE_WARN_DIST)
-                steering = -(0.3 + 0.5 * avoidance_strength)  # -0.3 a -0.8
+                obs_state.avoid_steering = -(0.3 + 0.7 * avoidance_strength)
 
-        # === ETAPE 6: Determiner si danger imminent ===
-        danger_imminent = (
-            min_dist_front < self.OBSTACLE_STOP_DIST or
-            danger_from_obstacles or
-            (min_dist_front_left < self.OBSTACLE_STOP_DIST * 0.7) or
-            (min_dist_front_right < self.OBSTACLE_STOP_DIST * 0.7)
-        )
-
-        # Mettre a jour l'etat
-        self.state.obstacle_detected = danger_imminent
-        self.state.obstacle_distance = min(min_dist_front, nearest_obstacle_dist)
+        # Mettre a jour l'etat global
+        self.state.obstacle_detected = obs_state.front_blocked
+        self.state.obstacle_distance = effective_front_dist
 
         # Debug info
-        if self.mode == 'car' and danger_imminent:
-            print(f"\n[PERCEPTION] DANGER! front={min_dist_front:.2f}m, "
-                  f"left={min_dist_front_left:.2f}m, right={min_dist_front_right:.2f}m")
+        if obs_state.front_blocked:
+            status = "BLOQUE PARTOUT" if obs_state.completely_blocked else "CONTOURNEMENT"
+            if self.mode == 'car':
+                print(f"\n[PERCEPTION] {status}: front={obs_state.front:.2f}m, "
+                      f"FL={obs_state.front_left:.2f}m, FR={obs_state.front_right:.2f}m, "
+                      f"L={obs_state.left:.2f}m, R={obs_state.right:.2f}m, "
+                      f"steer={obs_state.avoid_steering:.2f}")
 
-        return danger_imminent, effective_front_dist, steering
+        return obs_state
 
     def compute_control(self, wp: Waypoint) -> Tuple[float, float]:
         """
@@ -597,7 +622,10 @@ class NavigationController:
         """
         Execute une iteration de navigation.
 
-        Logique amelioree avec evitement reactif et securite renforcee.
+        Logique de contournement d'obstacles:
+        - Obstacle devant: la voiture tourne pour le contourner tout en avancant
+        - Bloque partout (murs de tous les cotes): arret complet
+        - Sinon: navigation normale vers le waypoint
 
         Returns:
             True si navigation en cours, False si terminee
@@ -621,45 +649,61 @@ class NavigationController:
                 return False
             return True
 
-        # === PERCEPTION: Verifier obstacles ===
-        danger_imminent, obs_dist, avoid_steering = self.check_obstacles()
+        # === PERCEPTION: Analyser les obstacles ===
+        obs = self.check_obstacles()
 
-        # === SECURITE: Arret d'urgence si danger imminent ===
-        if danger_imminent:
+        # === CAS 1: Completement bloque (murs partout) -> ARRET ===
+        if obs.completely_blocked:
             self.motor.set_speed(0)
-            # Continuer a tourner pour eviter l'obstacle
-            if abs(avoid_steering) > 0.1:
-                self.motor.set_steering(avoid_steering)
-            else:
-                # Si pas de direction claire, reculer un peu en tournant
-                self.motor.set_steering(0.5 if avoid_steering >= 0 else -0.5)
+            self.motor.set_steering(0)
+            if self.mode == 'car':
+                print("\n[NAV] ARRET: bloque de tous les cotes, aucune issue")
             return True
 
         # === NAVIGATION: Calculer commandes vers waypoint ===
         nav_speed, nav_steering = self.compute_control(wp)
 
-        # === FUSION: Combiner navigation et evitement ===
+        # === CAS 2: Obstacle devant -> CONTOURNER en avancant ===
+        if obs.front_blocked:
+            # Vitesse reduite mais on continue d'avancer
+            # Plus l'obstacle est proche, plus on ralentit
+            proximity = max(0.0, obs.front - self.OBSTACLE_STOP_DIST)
+            range_dist = self.OBSTACLE_SLOW_DIST - self.OBSTACLE_STOP_DIST
+            if range_dist > 0:
+                speed_factor = max(0.3, proximity / range_dist)
+            else:
+                speed_factor = 0.3
+
+            contour_speed = self.MIN_SPEED + (self.MAX_SPEED - self.MIN_SPEED) * speed_factor * 0.6
+
+            # Direction: on tourne fort vers le cote libre
+            # L'evitement domine la navigation quand on est proche
+            avoidance_weight = max(0.5, 1.0 - (proximity / range_dist if range_dist > 0 else 0))
+            contour_steering = (1 - avoidance_weight) * nav_steering + avoidance_weight * obs.avoid_steering
+
+            # Limiter
+            contour_speed = max(self.MIN_SPEED, min(self.MAX_SPEED, contour_speed))
+            contour_steering = max(-1.0, min(1.0, contour_steering))
+
+            self.motor.set_speed(contour_speed)
+            self.motor.set_steering(contour_steering)
+            return True
+
+        # === CAS 3: Pas d'obstacle proche -> navigation normale ===
         final_speed = nav_speed
         final_steering = nav_steering
 
+        # Legere influence de l'evitement si obstacle dans la zone d'avertissement
+        obs_dist = min(obs.front, obs.front_left * 0.8, obs.front_right * 0.8)
         if obs_dist < self.OBSTACLE_WARN_DIST:
-            # Zone de vigilance - adapter vitesse et direction
-
-            # Facteur de ralentissement progressif
-            slowdown = (obs_dist - self.OBSTACLE_STOP_DIST) / (self.OBSTACLE_WARN_DIST - self.OBSTACLE_STOP_DIST)
-            slowdown = max(0.2, min(1.0, slowdown))  # Entre 20% et 100%
-
-            # Appliquer ralentissement
+            # Ralentissement progressif
+            slowdown = (obs_dist - self.OBSTACLE_SLOW_DIST) / (self.OBSTACLE_WARN_DIST - self.OBSTACLE_SLOW_DIST)
+            slowdown = max(0.5, min(1.0, slowdown))
             final_speed = nav_speed * slowdown
 
-            # Mixer evitement et navigation
-            if obs_dist < self.OBSTACLE_SLOW_DIST:
-                # Plus proche = plus d'evitement
-                avoidance_weight = 1.0 - (obs_dist / self.OBSTACLE_SLOW_DIST)
-                avoidance_weight = max(0.0, min(0.8, avoidance_weight))
-
-                # Combiner les deux directions
-                final_steering = (1 - avoidance_weight) * nav_steering + avoidance_weight * avoid_steering
+            # Legere correction de direction
+            blend = 0.3 * (1.0 - obs_dist / self.OBSTACLE_WARN_DIST)
+            final_steering = (1 - blend) * nav_steering + blend * obs.avoid_steering
 
         # Limiter les valeurs
         final_speed = max(self.MIN_SPEED, min(self.MAX_SPEED, final_speed))
