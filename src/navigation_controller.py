@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-Controleur de navigation unifie pour Robocar.
+Controleur de navigation LiDAR pour Robocar.
 
-Ce controleur fonctionne avec les interfaces abstraites,
-permettant d'utiliser le meme code de navigation en:
-- Mode simulation (PC avec matplotlib)
-- Mode reel (Jetson Nano avec vrais capteurs)
+La voiture avance tout droit et utilise le LiDAR pour
+l'evitement d'obstacles en temps reel.
+Fonctionne en mode simulation (PC) ou reel (Jetson Nano).
 """
 
 import math
@@ -23,9 +22,9 @@ except ImportError:
     YAML_AVAILABLE = False
 
 from interface import (
-    ILidarSensor, IGPSSensor, IMotorController,
-    LidarData, GPSData,
-    SimulatedLidarAdapter, SimulatedGPSAdapter, SimulatedMotorAdapter
+    ILidarSensor, IMotorController,
+    LidarData,
+    SimulatedLidarAdapter, SimulatedMotorAdapter
 )
 
 # Import perception modules
@@ -52,19 +51,6 @@ class _ProcessorLidarScan:
 
 
 @dataclass
-class Waypoint:
-    """Point de passage."""
-    # Position locale (metres)
-    x: float = 0.0
-    y: float = 0.0
-    # Position GPS (si disponible)
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    # Etat
-    reached: bool = False
-
-
-@dataclass
 class NavigationState:
     """Etat de la navigation."""
     # Position actuelle
@@ -72,16 +58,6 @@ class NavigationState:
     y: float = 0.0
     theta: float = 0.0
     speed: float = 0.0
-
-    # GPS
-    latitude: float = 0.0
-    longitude: float = 0.0
-    gps_quality: int = 0
-
-    # Navigation
-    current_waypoint_idx: int = 0
-    distance_to_waypoint: float = 0.0
-    heading_error: float = 0.0
 
     # Obstacles
     obstacle_detected: bool = False
@@ -101,13 +77,11 @@ class NavigationController:
     """
 
     # Configuration
-    WAYPOINT_REACHED_DIST = 0.5      # Distance pour considerer waypoint atteint (m)
     MAX_SPEED = 0.5                   # Vitesse max normalisee
     MIN_SPEED = 0.1                   # Vitesse min normalisee
     OBSTACLE_STOP_DIST = 0.3          # Distance arret obstacle (m) - EMERGENCY STOP
     OBSTACLE_SLOW_DIST = 1.0          # Distance ralentissement (m)
     OBSTACLE_WARN_DIST = 2.0          # Distance avertissement (m)
-    STEERING_GAIN = 2.0               # Gain de direction
     LOOP_RATE = 20                    # Hz
 
     # Zones angulaires pour detection d'obstacles (en radians)
@@ -118,13 +92,8 @@ class NavigationController:
     LEFT_ZONE = (math.pi/2, 3*math.pi/4)       # +90° a +135°
     RIGHT_ZONE = (-3*math.pi/4, -math.pi/2)    # -135° a -90°
 
-    # Coordonnees de reference (Epitech Paris)
-    ORIGIN_LAT = 48.8156
-    ORIGIN_LON = 2.3631
-
     def __init__(self,
                  lidar: ILidarSensor,
-                 gps: IGPSSensor,
                  motor: IMotorController,
                  mode: str = 'simulation'):
         """
@@ -132,18 +101,12 @@ class NavigationController:
 
         Args:
             lidar: Capteur LiDAR (reel ou simule)
-            gps: Capteur GPS (reel ou simule)
             motor: Controleur moteur (reel ou simule)
             mode: 'simulation' ou 'car'
         """
         self.lidar = lidar
-        self.gps = gps
         self.motor = motor
         self.mode = mode
-
-        # Waypoints
-        self.waypoints: List[Waypoint] = []
-        self.current_waypoint_idx = 0
 
         # Etat
         self.state = NavigationState()
@@ -156,10 +119,6 @@ class NavigationController:
 
         # Points LiDAR actuels (pour visualisation)
         self.scan_points: List[Tuple[float, float]] = []
-
-        # Origine GPS
-        self.origin_lat = self.ORIGIN_LAT
-        self.origin_lon = self.ORIGIN_LON
 
         # === PERCEPTION MODULES ===
         # Processeur LiDAR pour filtrage et traitement des donnees
@@ -223,7 +182,6 @@ class NavigationController:
             # Charger les parametres de navigation
             if 'navigation' in config:
                 nav = config['navigation']
-                self.WAYPOINT_REACHED_DIST = nav.get('waypoint_reached_distance', self.WAYPOINT_REACHED_DIST)
                 self.MAX_SPEED = nav.get('max_speed', self.MAX_SPEED)
                 self.MIN_SPEED = nav.get('min_speed', self.MIN_SPEED)
                 self.STEERING_GAIN = nav.get('steering_gain', self.STEERING_GAIN)
@@ -270,55 +228,6 @@ class NavigationController:
             self.motor.set_pose(x, y, theta)
         if isinstance(self.lidar, SimulatedLidarAdapter):
             self.lidar.set_robot_pose(x, y, theta)
-        if isinstance(self.gps, SimulatedGPSAdapter):
-            self.gps.set_local_position(x, y, theta)
-
-    def set_gps_origin(self, lat: float, lon: float):
-        """Definit l'origine GPS pour la conversion locale."""
-        self.origin_lat = lat
-        self.origin_lon = lon
-
-    def add_waypoint_local(self, x: float, y: float):
-        """Ajoute un waypoint en coordonnees locales (metres)."""
-        self.waypoints.append(Waypoint(x=x, y=y))
-
-    def add_waypoint_gps(self, lat: float, lon: float):
-        """Ajoute un waypoint en coordonnees GPS."""
-        # Convertir en local
-        x, y = self._gps_to_local(lat, lon)
-        self.waypoints.append(Waypoint(x=x, y=y, latitude=lat, longitude=lon))
-
-    def _gps_to_local(self, lat: float, lon: float) -> Tuple[float, float]:
-        """Convertit des coordonnees GPS en position locale."""
-        meters_per_deg_lat = 111320.0
-        meters_per_deg_lon = 111320.0 * math.cos(math.radians(self.origin_lat))
-
-        x = (lon - self.origin_lon) * meters_per_deg_lon
-        y = (lat - self.origin_lat) * meters_per_deg_lat
-
-        return x, y
-
-    def _local_to_gps(self, x: float, y: float) -> Tuple[float, float]:
-        """Convertit une position locale en coordonnees GPS."""
-        meters_per_deg_lat = 111320.0
-        meters_per_deg_lon = 111320.0 * math.cos(math.radians(self.origin_lat))
-
-        lat = self.origin_lat + (y / meters_per_deg_lat)
-        lon = self.origin_lon + (x / meters_per_deg_lon)
-
-        return lat, lon
-
-    def distance_to_waypoint(self, wp: Waypoint) -> float:
-        """Calcule la distance jusqu'au waypoint."""
-        dx = wp.x - self.state.x
-        dy = wp.y - self.state.y
-        return math.sqrt(dx * dx + dy * dy)
-
-    def bearing_to_waypoint(self, wp: Waypoint) -> float:
-        """Calcule le cap vers le waypoint (radians)."""
-        dx = wp.x - self.state.x
-        dy = wp.y - self.state.y
-        return math.atan2(dy, dx)
 
     def _normalize_angle(self, angle: float) -> float:
         """
@@ -508,59 +417,6 @@ class NavigationController:
 
         return danger_imminent, effective_front_dist, steering
 
-    def compute_control(self, wp: Waypoint) -> Tuple[float, float]:
-        """
-        Calcule les commandes de controle.
-
-        Args:
-            wp: Waypoint cible
-
-        Returns:
-            (speed, steering)
-        """
-        # Distance et cap vers le waypoint
-        distance = self.distance_to_waypoint(wp)
-        target_bearing = self.bearing_to_waypoint(wp)
-
-        # Erreur de cap
-        heading_error = target_bearing - self.state.theta
-        # Normaliser entre -pi et pi
-        while heading_error > math.pi:
-            heading_error -= 2 * math.pi
-        while heading_error < -math.pi:
-            heading_error += 2 * math.pi
-
-        self.state.heading_error = heading_error
-        self.state.distance_to_waypoint = distance
-
-        # Commande de direction
-        steering = self.STEERING_GAIN * heading_error
-        steering = max(-1.0, min(1.0, steering))
-
-        # Vitesse de base
-        speed = self.MAX_SPEED
-
-        # Ralentir si proche du waypoint
-        if distance < 2.0:
-            speed = self.MIN_SPEED + (self.MAX_SPEED - self.MIN_SPEED) * (distance / 2.0)
-
-        return speed, steering
-
-    def update_state_from_gps(self):
-        """Met a jour l'etat depuis le GPS (mode reel)."""
-        pos = self.gps.get_position()
-        if pos and pos.is_valid:
-            self.state.latitude = pos.latitude
-            self.state.longitude = pos.longitude
-            self.state.gps_quality = pos.quality
-
-            # Convertir en local
-            self.state.x, self.state.y = self._gps_to_local(pos.latitude, pos.longitude)
-
-            # Cap depuis le GPS si disponible
-            if hasattr(pos, 'heading') and pos.heading != 0:
-                self.state.theta = pos.heading
-
     def update_state_from_motor(self, dt: float):
         """Met a jour l'etat depuis le moteur simule."""
         if isinstance(self.motor, SimulatedMotorAdapter):
@@ -573,16 +429,9 @@ class NavigationController:
             self.state.theta = theta
             self.state.speed = speed
 
-            # Mettre a jour les autres simulateurs
+            # Mettre a jour le simulateur LiDAR
             if isinstance(self.lidar, SimulatedLidarAdapter):
                 self.lidar.set_robot_pose(x, y, theta)
-            if isinstance(self.gps, SimulatedGPSAdapter):
-                self.gps.set_local_position(x, y, theta, speed)
-
-            # Calculer GPS simule
-            lat, lon = self._local_to_gps(x, y)
-            self.state.latitude = lat
-            self.state.longitude = lon
 
             # Ajouter a la trajectoire
             self.trajectory.append((x, y))
@@ -597,30 +446,11 @@ class NavigationController:
         """
         Execute une iteration de navigation.
 
-        Logique amelioree avec evitement reactif et securite renforcee.
+        Mode LiDAR uniquement: avance tout droit et evite les obstacles.
 
         Returns:
             True si navigation en cours, False si terminee
         """
-        if not self.waypoints or self.current_waypoint_idx >= len(self.waypoints):
-            return False
-
-        # Waypoint courant
-        wp = self.waypoints[self.current_waypoint_idx]
-        distance = self.distance_to_waypoint(wp)
-
-        # Verifier si waypoint atteint
-        if distance < self.WAYPOINT_REACHED_DIST:
-            wp.reached = True
-            self.current_waypoint_idx += 1
-            print(f"[NAV] Waypoint {self.current_waypoint_idx} atteint!")
-
-            if self.current_waypoint_idx >= len(self.waypoints):
-                print("[NAV] Destination finale atteinte!")
-                self.motor.emergency_stop()
-                return False
-            return True
-
         # === PERCEPTION: Verifier obstacles ===
         danger_imminent, obs_dist, avoid_steering = self.check_obstacles()
 
@@ -631,16 +461,13 @@ class NavigationController:
             if abs(avoid_steering) > 0.1:
                 self.motor.set_steering(avoid_steering)
             else:
-                # Si pas de direction claire, reculer un peu en tournant
+                # Si pas de direction claire, tourner pour se degager
                 self.motor.set_steering(0.5 if avoid_steering >= 0 else -0.5)
             return True
 
-        # === NAVIGATION: Calculer commandes vers waypoint ===
-        nav_speed, nav_steering = self.compute_control(wp)
-
-        # === FUSION: Combiner navigation et evitement ===
-        final_speed = nav_speed
-        final_steering = nav_steering
+        # === NAVIGATION: Avancer tout droit ===
+        final_speed = self.MAX_SPEED
+        final_steering = 0.0
 
         if obs_dist < self.OBSTACLE_WARN_DIST:
             # Zone de vigilance - adapter vitesse et direction
@@ -650,16 +477,13 @@ class NavigationController:
             slowdown = max(0.2, min(1.0, slowdown))  # Entre 20% et 100%
 
             # Appliquer ralentissement
-            final_speed = nav_speed * slowdown
+            final_speed = self.MAX_SPEED * slowdown
 
-            # Mixer evitement et navigation
+            # Evitement d'obstacles
             if obs_dist < self.OBSTACLE_SLOW_DIST:
-                # Plus proche = plus d'evitement
                 avoidance_weight = 1.0 - (obs_dist / self.OBSTACLE_SLOW_DIST)
                 avoidance_weight = max(0.0, min(0.8, avoidance_weight))
-
-                # Combiner les deux directions
-                final_steering = (1 - avoidance_weight) * nav_steering + avoidance_weight * avoid_steering
+                final_steering = avoidance_weight * avoid_steering
 
         # Limiter les valeurs
         final_speed = max(self.MIN_SPEED, min(self.MAX_SPEED, final_speed))
@@ -680,11 +504,6 @@ class NavigationController:
             return False
         print("  LiDAR OK")
 
-        if not self.gps.start():
-            print("[ERREUR] GPS non disponible")
-            return False
-        print("  GPS OK")
-
         if not self.motor.start():
             print("[ERREUR] Moteur non disponible")
             return False
@@ -704,17 +523,10 @@ class NavigationController:
         if self.lidar:
             self.lidar.stop()
 
-        if self.gps:
-            self.gps.stop()
-
         print("[NAV] Arret termine.")
 
     def run_headless(self):
         """Execute la navigation sans visualisation."""
-        if not self.waypoints:
-            print("[NAV] Aucun waypoint defini!")
-            return
-
         if not self.init_sensors():
             return
 
@@ -722,7 +534,7 @@ class NavigationController:
         self.start_time = time.time()
         dt = 1.0 / self.LOOP_RATE
 
-        print(f"\n[NAV] Demarrage navigation vers {len(self.waypoints)} waypoints")
+        print(f"\n[NAV] Demarrage navigation LiDAR (avancer + evitement)")
         print("[NAV] Appuyez sur Ctrl+C pour arreter\n")
 
         try:
@@ -730,8 +542,6 @@ class NavigationController:
                 # Mise a jour etat
                 if self.mode == 'simulation':
                     self.update_state_from_motor(dt)
-                else:
-                    self.update_state_from_gps()
 
                 # Iteration de navigation
                 if not self.navigation_step():
@@ -739,11 +549,9 @@ class NavigationController:
 
                 # Affichage etat
                 self.state.elapsed_time = time.time() - self.start_time
-                wp_idx = min(self.current_waypoint_idx, len(self.waypoints) - 1)
-                print(f"\r[NAV] WP{wp_idx + 1}/{len(self.waypoints)}: "
-                      f"pos=({self.state.x:.1f},{self.state.y:.1f}) "
-                      f"dist={self.state.distance_to_waypoint:.1f}m "
-                      f"obs={self.state.obstacle_distance:.1f}m", end='')
+                print(f"\r[NAV] pos=({self.state.x:.1f},{self.state.y:.1f}) "
+                      f"obs={self.state.obstacle_distance:.1f}m "
+                      f"t={self.state.elapsed_time:.0f}s", end='')
 
                 time.sleep(dt)
 
@@ -760,28 +568,17 @@ class NavigationController:
         from matplotlib.patches import Polygon, Circle
         import numpy as np
 
-        if not self.waypoints:
-            print("[NAV] Aucun waypoint defini!")
-            return
-
         if not self.init_sensors():
             return
 
         # Configuration matplotlib
         plt.ion()
         fig, ax = plt.subplots(1, 1, figsize=(12, 10))
-        fig.canvas.manager.set_window_title('Robocar - Navigation')
+        fig.canvas.manager.set_window_title('Robocar - Navigation LiDAR')
 
-        # Determiner les limites de la zone
-        all_x = [self.state.x] + [wp.x for wp in self.waypoints]
-        all_y = [self.state.y] + [wp.y for wp in self.waypoints]
-        margin = 5
-        x_min, x_max = min(all_x) - margin, max(all_x) + margin
-        y_min, y_max = min(all_y) - margin, max(all_y) + margin
-
-        # Agrandir si environnement plus grand
-        x_min, x_max = min(x_min, -20), max(x_max, 20)
-        y_min, y_max = min(y_min, -20), max(y_max, 20)
+        # Limites de la zone
+        x_min, x_max = -20, 20
+        y_min, y_max = -20, 20
 
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
@@ -795,7 +592,6 @@ class NavigationController:
         robot_arrow = None
         lidar_scatter = None
         trajectory_line = None
-        waypoint_markers = []
         info_text = None
 
         self.running = True
@@ -814,7 +610,7 @@ class NavigationController:
         fig.canvas.mpl_connect('key_press_event', on_key)
         fig.canvas.mpl_connect('close_event', on_close)
 
-        print(f"\n[NAV] Demarrage navigation vers {len(self.waypoints)} waypoints")
+        print(f"\n[NAV] Demarrage navigation LiDAR (avancer + evitement)")
         print("Controles: [ESPACE] Pause | [Q] Quitter\n")
 
         try:
@@ -842,9 +638,6 @@ class NavigationController:
                     trajectory_line.remove()
                 if info_text:
                     info_text.remove()
-                for marker in waypoint_markers:
-                    marker.remove()
-                waypoint_markers.clear()
 
                 # Dessiner trajectoire
                 if len(self.trajectory) > 1:
@@ -865,23 +658,6 @@ class NavigationController:
                         points[:, 0], points[:, 1],
                         c=distances, cmap='RdYlGn', s=5, alpha=0.6, zorder=3
                     )
-
-                # Dessiner waypoints
-                for i, wp in enumerate(self.waypoints):
-                    if i < self.current_waypoint_idx:
-                        color, marker, size = 'green', 'o', 80
-                    elif i == self.current_waypoint_idx:
-                        color, marker, size = 'red', 'X', 150
-                    else:
-                        color, marker, size = 'orange', 'o', 100
-
-                    scatter = ax.scatter(wp.x, wp.y, c=color, marker=marker,
-                                        s=size, zorder=5, edgecolors='black')
-                    waypoint_markers.append(scatter)
-
-                    text = ax.text(wp.x + 0.3, wp.y + 0.3, str(i + 1),
-                                  fontsize=10, fontweight='bold')
-                    waypoint_markers.append(text)
 
                 # Dessiner robot
                 robot_length, robot_width = 0.4, 0.25
@@ -912,18 +688,11 @@ class NavigationController:
 
                 # Informations
                 self.state.elapsed_time = time.time() - self.start_time
-                wp_idx = min(self.current_waypoint_idx, len(self.waypoints) - 1)
-                wp_info = (f"Waypoint {wp_idx + 1}/{len(self.waypoints)}: "
-                          f"{self.state.distance_to_waypoint:.1f}m")
-                if self.current_waypoint_idx >= len(self.waypoints):
-                    wp_info = "TERMINE!"
 
                 info = (
                     f"Position: ({self.state.x:.2f}, {self.state.y:.2f})\n"
-                    f"GPS: ({self.state.latitude:.6f}, {self.state.longitude:.6f})\n"
                     f"Heading: {math.degrees(self.state.theta):.0f} deg\n"
                     f"Vitesse: {self.state.speed:.2f} m/s\n"
-                    f"{wp_info}\n"
                     f"Obstacle: {self.state.obstacle_distance:.1f}m\n"
                     f"Distance totale: {self.state.total_distance:.1f}m\n"
                     f"Temps: {self.state.elapsed_time:.1f}s\n"
@@ -968,52 +737,26 @@ class NavigationController:
 
     def run_real(self):
         """Execute la navigation en mode reel (Jetson Nano)."""
-        if not self.waypoints:
-            print("[NAV] Aucun waypoint defini!")
-            return
-
         if not self.init_sensors():
             return
-
-        # Attendre fix GPS
-        print("[NAV] Attente fix GPS...")
-        if not self.gps.wait_for_fix(timeout=60):
-            print("[ERREUR] Pas de fix GPS!")
-            return
-
-        pos = self.gps.get_position()
-        print(f"[NAV] Fix GPS obtenu: ({pos.latitude:.6f}, {pos.longitude:.6f})")
-        print(f"      Qualite: {pos.quality_string}, Precision: {pos.accuracy_h:.2f}m")
-
-        # Initialiser position
-        self.state.latitude = pos.latitude
-        self.state.longitude = pos.longitude
-        self.state.x, self.state.y = self._gps_to_local(pos.latitude, pos.longitude)
 
         self.running = True
         self.start_time = time.time()
         dt = 1.0 / self.LOOP_RATE
 
-        print(f"\n[NAV] Demarrage navigation vers {len(self.waypoints)} waypoints")
+        print(f"\n[NAV] Demarrage navigation LiDAR (avancer + evitement)")
         print("[NAV] Appuyez sur Ctrl+C pour arreter\n")
 
         try:
             while self.running:
-                # Mise a jour etat depuis GPS
-                self.update_state_from_gps()
-
                 # Iteration de navigation
                 if not self.navigation_step():
                     break
 
                 # Affichage etat
                 self.state.elapsed_time = time.time() - self.start_time
-                wp_idx = min(self.current_waypoint_idx, len(self.waypoints) - 1)
-                print(f"\r[NAV] WP{wp_idx + 1}/{len(self.waypoints)}: "
-                      f"GPS=({self.state.latitude:.6f},{self.state.longitude:.6f}) "
-                      f"dist={self.state.distance_to_waypoint:.1f}m "
-                      f"obs={self.state.obstacle_distance:.1f}m "
-                      f"qual={self.state.gps_quality}", end='')
+                print(f"\r[NAV] obs={self.state.obstacle_distance:.1f}m "
+                      f"t={self.state.elapsed_time:.0f}s", end='')
 
                 time.sleep(dt)
 
@@ -1031,7 +774,6 @@ class NavigationController:
         print("=" * 50)
         print(f"Temps total: {self.state.elapsed_time:.1f}s")
         print(f"Distance parcourue: {self.state.total_distance:.1f}m")
-        print(f"Waypoints atteints: {self.current_waypoint_idx}/{len(self.waypoints)}")
         if self.state.total_distance > 0 and self.state.elapsed_time > 0:
             avg_speed = self.state.total_distance / self.state.elapsed_time
             print(f"Vitesse moyenne: {avg_speed:.2f} m/s")
