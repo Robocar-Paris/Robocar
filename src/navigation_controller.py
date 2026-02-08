@@ -82,6 +82,8 @@ class NavigationController:
     OBSTACLE_STOP_DIST = 0.3          # Distance arret obstacle (m) - EMERGENCY STOP
     OBSTACLE_SLOW_DIST = 1.0          # Distance ralentissement (m)
     OBSTACLE_WARN_DIST = 2.0          # Distance avertissement (m)
+    SIDE_OBSTACLE_DIST = 0.5          # Distance evitement lateral (m)
+    AVOIDANCE_SPEED = 0.15            # Vitesse lente pendant evitement (m/s norm)
     LOOP_RATE = 20                    # Hz
 
     # Zones angulaires pour detection d'obstacles (en radians)
@@ -153,7 +155,6 @@ class NavigationController:
             config_path: Chemin vers le fichier de config (optionnel)
         """
         if not YAML_AVAILABLE:
-            print("[NAV] PyYAML non disponible, utilisation des valeurs par defaut")
             return
 
         # Chercher le fichier de config
@@ -163,7 +164,6 @@ class NavigationController:
             config_path = script_dir / 'config' / 'robot.yaml'
 
         if not os.path.exists(config_path):
-            print(f"[NAV] Fichier config non trouve: {config_path}")
             return
 
         try:
@@ -176,15 +176,14 @@ class NavigationController:
                 self.OBSTACLE_STOP_DIST = safety.get('emergency_stop_distance', self.OBSTACLE_STOP_DIST)
                 self.OBSTACLE_SLOW_DIST = safety.get('slow_distance', self.OBSTACLE_SLOW_DIST)
                 self.OBSTACLE_WARN_DIST = safety.get('warning_distance', self.OBSTACLE_WARN_DIST)
-                print(f"[NAV] Config securite: stop={self.OBSTACLE_STOP_DIST}m, "
-                      f"slow={self.OBSTACLE_SLOW_DIST}m, warn={self.OBSTACLE_WARN_DIST}m")
 
             # Charger les parametres de navigation
             if 'navigation' in config:
                 nav = config['navigation']
                 self.MAX_SPEED = nav.get('max_speed', self.MAX_SPEED)
                 self.MIN_SPEED = nav.get('min_speed', self.MIN_SPEED)
-                self.STEERING_GAIN = nav.get('steering_gain', self.STEERING_GAIN)
+                self.SIDE_OBSTACLE_DIST = nav.get('side_obstacle_distance', self.SIDE_OBSTACLE_DIST)
+                self.AVOIDANCE_SPEED = nav.get('avoidance_speed', self.AVOIDANCE_SPEED)
                 self.LOOP_RATE = nav.get('loop_rate', self.LOOP_RATE)
 
             # Charger les parametres de perception
@@ -212,10 +211,8 @@ class NavigationController:
                         tracking_max_age=obs_cfg.get('tracking_max_age', 10)
                     )
 
-            print("[NAV] Configuration chargee avec succes")
-
-        except Exception as e:
-            print(f"[NAV] Erreur chargement config: {e}")
+        except Exception:
+            pass
 
     def set_initial_pose(self, x: float, y: float, theta: float):
         """Definit la pose initiale."""
@@ -281,7 +278,7 @@ class NavigationController:
             scan_frequency=scan.scan_frequency
         )
 
-    def check_obstacles(self) -> Tuple[bool, float, float]:
+    def check_obstacles(self) -> Tuple[bool, float, float, float, float]:
         """
         Verifie les obstacles via LiDAR avec perception avancee.
 
@@ -289,13 +286,12 @@ class NavigationController:
         ObstacleDetector pour detecter et classifier les obstacles.
 
         Returns:
-            (danger_imminent, min_distance_front, suggested_steering)
+            (danger_imminent, min_distance_front, suggested_steering,
+             min_dist_left, min_dist_right)
         """
         scan = self.lidar.get_scan()
         if not scan or len(scan.points) == 0:
-            # Pas de donnees LiDAR - DANGER, on arrete!
-            print("[PERCEPTION] Pas de donnees LiDAR!")
-            return True, 0.0, 0.0
+            return True, 0.0, 0.0, 0.0, 0.0
 
         # Reinitialiser les points pour visualisation
         self.scan_points = []
@@ -305,15 +301,13 @@ class NavigationController:
             processor_scan = self._convert_scan_to_processor_format(scan)
             processed = self.lidar_processor.process(processor_scan)
             self.last_processed_scan = processed
-        except Exception as e:
-            print(f"[PERCEPTION] Erreur traitement scan: {e}")
-            return True, 0.0, 0.0
+        except Exception:
+            return True, 0.0, 0.0, 0.0, 0.0
 
         # === ETAPE 2: Detecter les obstacles ===
         try:
             self.detected_obstacles = self.obstacle_detector.detect(processed)
-        except Exception as e:
-            print(f"[PERCEPTION] Erreur detection obstacles: {e}")
+        except Exception:
             self.detected_obstacles = []
 
         # === ETAPE 3: Calculer les distances par zone ===
@@ -410,12 +404,7 @@ class NavigationController:
         self.state.obstacle_detected = danger_imminent
         self.state.obstacle_distance = min(min_dist_front, nearest_obstacle_dist)
 
-        # Debug info
-        if self.mode == 'car' and danger_imminent:
-            print(f"\n[PERCEPTION] DANGER! front={min_dist_front:.2f}m, "
-                  f"left={min_dist_front_left:.2f}m, right={min_dist_front_right:.2f}m")
-
-        return danger_imminent, effective_front_dist, steering
+        return danger_imminent, effective_front_dist, steering, min_dist_left, min_dist_right
 
     def update_state_from_motor(self, dt: float):
         """Met a jour l'etat depuis le moteur simule."""
@@ -452,38 +441,52 @@ class NavigationController:
             True si navigation en cours, False si terminee
         """
         # === PERCEPTION: Verifier obstacles ===
-        danger_imminent, obs_dist, avoid_steering = self.check_obstacles()
+        danger_imminent, obs_dist, avoid_steering, dist_left, dist_right = self.check_obstacles()
 
-        # === SECURITE: Arret d'urgence si danger imminent ===
+        # === SECURITE: Obstacle tres proche - avancer lentement en tournant ===
         if danger_imminent:
-            self.motor.set_speed(0)
-            # Continuer a tourner pour eviter l'obstacle
+            # Choisir la direction d'evitement
             if abs(avoid_steering) > 0.1:
-                self.motor.set_steering(avoid_steering)
+                steer = avoid_steering
             else:
-                # Si pas de direction claire, tourner pour se degager
-                self.motor.set_steering(0.5 if avoid_steering >= 0 else -0.5)
+                # Pas de direction claire depuis l'avant, utiliser les cotes
+                if dist_left > dist_right:
+                    steer = 0.7   # Plus de place a gauche, tourner a gauche
+                else:
+                    steer = -0.7  # Plus de place a droite, tourner a droite
+
+            # Avancer lentement en tournant fort pour contourner l'obstacle
+            # (avec speed=0 le modele bicyclette ne tourne pas du tout)
+            self.motor.set_speed(self.AVOIDANCE_SPEED)
+            self.motor.set_steering(max(-1.0, min(1.0, steer * 1.3)))
             return True
 
         # === NAVIGATION: Avancer tout droit ===
         final_speed = self.MAX_SPEED
         final_steering = 0.0
 
-        if obs_dist < self.OBSTACLE_WARN_DIST:
-            # Zone de vigilance - adapter vitesse et direction
+        # --- Evitement lateral: obstacle proche sur un cote ---
+        if dist_left < self.SIDE_OBSTACLE_DIST:
+            side_strength = 1.0 - (dist_left / self.SIDE_OBSTACLE_DIST)
+            final_steering -= 0.5 * side_strength  # Tourner a droite
 
+        if dist_right < self.SIDE_OBSTACLE_DIST:
+            side_strength = 1.0 - (dist_right / self.SIDE_OBSTACLE_DIST)
+            final_steering += 0.5 * side_strength  # Tourner a gauche
+
+        # --- Evitement frontal ---
+        if obs_dist < self.OBSTACLE_WARN_DIST:
             # Facteur de ralentissement progressif
             slowdown = (obs_dist - self.OBSTACLE_STOP_DIST) / (self.OBSTACLE_WARN_DIST - self.OBSTACLE_STOP_DIST)
-            slowdown = max(0.2, min(1.0, slowdown))  # Entre 20% et 100%
+            slowdown = max(0.2, min(1.0, slowdown))
 
-            # Appliquer ralentissement
             final_speed = self.MAX_SPEED * slowdown
 
-            # Evitement d'obstacles
+            # Evitement d'obstacles - plus agressif quand l'obstacle est proche
             if obs_dist < self.OBSTACLE_SLOW_DIST:
                 avoidance_weight = 1.0 - (obs_dist / self.OBSTACLE_SLOW_DIST)
-                avoidance_weight = max(0.0, min(0.8, avoidance_weight))
-                final_steering = avoidance_weight * avoid_steering
+                avoidance_weight = max(0.0, min(1.0, avoidance_weight))
+                final_steering += avoidance_weight * avoid_steering
 
         # Limiter les valeurs
         final_speed = max(self.MIN_SPEED, min(self.MAX_SPEED, final_speed))
@@ -497,23 +500,16 @@ class NavigationController:
 
     def init_sensors(self) -> bool:
         """Initialise tous les capteurs."""
-        print("[NAV] Initialisation des capteurs...")
-
         if not self.lidar.start():
-            print("[ERREUR] LiDAR non disponible")
             return False
-        print("  LiDAR OK")
 
         if not self.motor.start():
-            print("[ERREUR] Moteur non disponible")
             return False
-        print("  Moteur OK")
 
         return True
 
     def shutdown(self):
         """Arrete proprement tous les composants."""
-        print("[NAV] Arret...")
         self.running = False
 
         if self.motor:
@@ -522,8 +518,6 @@ class NavigationController:
 
         if self.lidar:
             self.lidar.stop()
-
-        print("[NAV] Arret termine.")
 
     def run_headless(self):
         """Execute la navigation sans visualisation."""
@@ -534,33 +528,22 @@ class NavigationController:
         self.start_time = time.time()
         dt = 1.0 / self.LOOP_RATE
 
-        print(f"\n[NAV] Demarrage navigation LiDAR (avancer + evitement)")
-        print("[NAV] Appuyez sur Ctrl+C pour arreter\n")
-
         try:
             while self.running:
-                # Mise a jour etat
                 if self.mode == 'simulation':
                     self.update_state_from_motor(dt)
 
-                # Iteration de navigation
                 if not self.navigation_step():
                     break
 
-                # Affichage etat
                 self.state.elapsed_time = time.time() - self.start_time
-                print(f"\r[NAV] pos=({self.state.x:.1f},{self.state.y:.1f}) "
-                      f"obs={self.state.obstacle_distance:.1f}m "
-                      f"t={self.state.elapsed_time:.0f}s", end='')
-
                 time.sleep(dt)
 
         except KeyboardInterrupt:
-            print("\n[NAV] Interruption utilisateur")
+            pass
 
         finally:
             self.shutdown()
-            self._print_summary()
 
     def run_with_gui(self):
         """Execute la navigation avec visualisation matplotlib."""
@@ -609,9 +592,6 @@ class NavigationController:
 
         fig.canvas.mpl_connect('key_press_event', on_key)
         fig.canvas.mpl_connect('close_event', on_close)
-
-        print(f"\n[NAV] Demarrage navigation LiDAR (avancer + evitement)")
-        print("Controles: [ESPACE] Pause | [Q] Quitter\n")
 
         try:
             while self.running and plt.fignum_exists(fig.number):
@@ -725,11 +705,10 @@ class NavigationController:
                 plt.pause(dt)
 
         except KeyboardInterrupt:
-            print("\n[NAV] Interruption utilisateur")
+            pass
 
         finally:
             self.shutdown()
-            self._print_summary()
 
             plt.ioff()
             if plt.fignum_exists(fig.number):
@@ -744,37 +723,17 @@ class NavigationController:
         self.start_time = time.time()
         dt = 1.0 / self.LOOP_RATE
 
-        print(f"\n[NAV] Demarrage navigation LiDAR (avancer + evitement)")
-        print("[NAV] Appuyez sur Ctrl+C pour arreter\n")
-
         try:
             while self.running:
-                # Iteration de navigation
                 if not self.navigation_step():
                     break
 
-                # Affichage etat
                 self.state.elapsed_time = time.time() - self.start_time
-                print(f"\r[NAV] obs={self.state.obstacle_distance:.1f}m "
-                      f"t={self.state.elapsed_time:.0f}s", end='')
-
                 time.sleep(dt)
 
         except KeyboardInterrupt:
-            print("\n[NAV] Interruption utilisateur")
+            pass
 
         finally:
             self.shutdown()
-            self._print_summary()
 
-    def _print_summary(self):
-        """Affiche le resume de la navigation."""
-        print("\n" + "=" * 50)
-        print("   RESUME NAVIGATION")
-        print("=" * 50)
-        print(f"Temps total: {self.state.elapsed_time:.1f}s")
-        print(f"Distance parcourue: {self.state.total_distance:.1f}m")
-        if self.state.total_distance > 0 and self.state.elapsed_time > 0:
-            avg_speed = self.state.total_distance / self.state.elapsed_time
-            print(f"Vitesse moyenne: {avg_speed:.2f} m/s")
-        print("=" * 50)
