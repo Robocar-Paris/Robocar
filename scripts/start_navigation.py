@@ -42,23 +42,6 @@ class Colors:
     RESET = '\033[0m'
 
 
-def print_banner():
-    print(f"""
-{Colors.BOLD}{Colors.BLUE}
-╔═══════════════════════════════════════════════════════════╗
-║                                                           ║
-║     ██████╗  ██████╗ ██████╗  ██████╗  ██████╗ █████╗ ██████╗  ║
-║     ██╔══██╗██╔═══██╗██╔══██╗██╔═══██╗██╔════╝██╔══██╗██╔══██╗ ║
-║     ██████╔╝██║   ██║██████╔╝██║   ██║██║     ███████║██████╔╝ ║
-║     ██╔══██╗██║   ██║██╔══██╗██║   ██║██║     ██╔══██║██╔══██╗ ║
-║     ██║  ██║╚██████╔╝██████╔╝╚██████╔╝╚██████╗██║  ██║██║  ██║ ║
-║     ╚═╝  ╚═╝ ╚═════╝ ╚═════╝  ╚═════╝  ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ║
-║                                                           ║
-║              NAVIGATION AUTONOME LIDAR                    ║
-╚═══════════════════════════════════════════════════════════╝
-{Colors.RESET}""")
-
-
 def log_info(msg: str):
     print(f"{Colors.CYAN}[INFO]{Colors.RESET} {msg}")
 
@@ -301,7 +284,6 @@ class NavigationLauncher:
 
     def run(self) -> int:
         """Execute la navigation."""
-        print_banner()
 
         # Mode simulation
         if self.args.simulation:
